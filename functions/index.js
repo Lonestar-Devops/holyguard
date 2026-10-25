@@ -7,13 +7,6 @@ admin.initializeApp();
 // Get Firestore instance - this will use the (default) database
 const db = admin.firestore();
 
-// Secure access codes stored server-side
-const ACCESS_CODES = {
-  'SEC-882': { role: 'security', valid: true },
-  'LEAD-991': { role: 'admin', valid: true },
-  'MEM-001': { role: 'member', valid: true },
-};
-
 // Helper function to generate random invite code
 function generateInviteCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Removed ambiguous chars
@@ -27,6 +20,52 @@ function generateInviteCode() {
   }
   return code; // Format: JOIN-XXXX-XXXX
 }
+
+const { INTENTS_COLLECTION, WINDOW_BEFORE_MS } = require('./inviteJoinRepair');
+
+// The org an invite code points at. Codes store the org's `id` field, which for orgs
+// created in the app differs from the doc id; some older orgs and their codes use the
+// doc id instead. If several docs match, the oldest is the real org: a copy planted
+// later can't predate it.
+async function findInviteOrgDoc(orgId) {
+  const [byIdField, direct] = await Promise.all([
+    db.collection('organizations').where('id', '==', orgId).get(),
+    db.collection('organizations').doc(orgId).get(),
+  ]);
+  const candidates = [...byIdField.docs];
+  if (direct.exists && !candidates.some(d => d.id === direct.id)) candidates.push(direct);
+  if (!candidates.length) return null;
+  return candidates.reduce((oldest, d) =>
+    (d.createTime.toMillis() < oldest.createTime.toMillis() ? d : oldest));
+}
+
+// A profile's org, read the way the security rules read it: organization_id when present,
+// otherwise the legacy organizationId. '' when the profile has no usable org.
+function profileOrgId(profile) {
+  const orgId = 'organization_id' in profile ? profile.organization_id : profile.organizationId;
+  return typeof orgId === 'string' && orgId !== 'removed' ? orgId : '';
+}
+
+// createdBy values of codes written by the admin scripts rather than by a user.
+const SCRIPT_CODE_CREATORS = new Set(['system', 'test-admin', 'e2e-test']);
+
+// A code only works while whoever minted it still administers the code's org, so codes
+// from an admin who was demoted, moved, quarantined or deleted stop working.
+async function codeCreatorStillAdmin(codeData) {
+  const creatorId = codeData.createdBy;
+  if (typeof creatorId !== 'string' || !creatorId) return false;
+  const creatorDoc = await db.collection('users').doc(creatorId).get();
+  if (!creatorDoc.exists) return SCRIPT_CODE_CREATORS.has(creatorId);
+  const creator = creatorDoc.data();
+  if (creator.role === 'super_admin') return true;
+  return creator.role === 'admin' && profileOrgId(creator) === codeData.organizationId;
+}
+
+// How long a new profile must wait before minting invite codes: repairInviteJoin vets
+// a profile that names an org within seconds of its creation, so an unvetted claim
+// can't mint a code meanwhile. The sole member of an org (its creator or provisioned
+// admin) doesn't wait.
+const NEW_PROFILE_INVITE_COOLDOWN_MS = 10 * 60 * 1000;
 
 // Validate invite code (replaces validateAccessCode)
 exports.validateInviteCode = functions.https.onRequest(async (req, res) => {
@@ -68,11 +107,16 @@ exports.validateInviteCode = functions.https.onRequest(async (req, res) => {
     const codeData = codeDoc.data();
     
     // Validate code
-    if (!codeData.isActive) {
+    if (typeof codeData.organizationId !== 'string' || !codeData.organizationId) {
+      res.status(200).json({ valid: false, error: 'Invalid invite code' });
+      return;
+    }
+
+    if (!codeData.isActive || !(await codeCreatorStillAdmin(codeData))) {
       res.status(200).json({ valid: false, error: 'This invite code has been deactivated' });
       return;
     }
-    
+
     // Check expiration
     if (codeData.expiresAt && codeData.expiresAt.toDate() < new Date()) {
       res.status(200).json({ valid: false, error: 'This invite code has expired' });
@@ -85,26 +129,42 @@ exports.validateInviteCode = functions.https.onRequest(async (req, res) => {
       return;
     }
     
-    // Get organization details
-    const orgDoc = await db.collection('organizations').doc(codeData.organizationId).get();
-    const orgName = orgDoc.exists ? orgDoc.data().name : 'Unknown Organization';
+    // Get organization details. A code for an org that doesn't exist can't attach
+    // anyone to anything, and its join intents would only confuse repairInviteJoin.
+    const orgDoc = await findInviteOrgDoc(codeData.organizationId);
+    if (!orgDoc) {
+      res.status(200).json({ valid: false, error: 'Invalid invite code' });
+      return;
+    }
+    const orgData = orgDoc.data();
+    const orgName = orgData.name;
 
     // Check seat limit
-    if (orgDoc.exists) {
-      const orgData = orgDoc.data();
-      const maxSeats = orgData.maxSeats || 0;
-      if (maxSeats > 0) {
-        const membersSnapshot = await db.collection('users')
-          .where('organization_id', '==', codeData.organizationId)
-          .get();
-        const currentMembers = membersSnapshot.size;
-        if (currentMembers >= maxSeats) {
-          res.status(200).json({
-            valid: false,
-            error: `This organization has reached its seat limit (${maxSeats}). Contact the admin to upgrade the plan.`,
-          });
-          return;
-        }
+    const maxSeats = orgData.maxSeats || 0;
+    if (maxSeats > 0) {
+      const [membersSnapshot, recentIntents] = await Promise.all([
+        db.collection('users').where('organization_id', '==', codeData.organizationId).get(),
+        db.collection(INTENTS_COLLECTION)
+          .where('validatedAt', '>=', admin.firestore.Timestamp.fromMillis(Date.now() - WINDOW_BEFORE_MS))
+          .get(),
+      ]);
+      // Someone who validated a code in the last few minutes is about to be attached by
+      // repairInviteJoin, so their seat is already taken.
+      const joining = recentIntents.docs.filter(d =>
+        d.data().organizationId === codeData.organizationId && d.data().consumed === false).length;
+      if (membersSnapshot.size >= maxSeats) {
+        res.status(200).json({
+          valid: false,
+          error: `This organization has reached its seat limit (${maxSeats}). Contact the admin to upgrade the plan.`,
+        });
+        return;
+      }
+      if (membersSnapshot.size + joining >= maxSeats) {
+        res.status(200).json({
+          valid: false,
+          error: 'Someone is joining this organization with its last open seat right now. Please try again in a few minutes.',
+        });
+        return;
       }
     }
 
@@ -112,6 +172,22 @@ exports.validateInviteCode = functions.https.onRequest(async (req, res) => {
     await codesRef.doc(codeDoc.id).update({
       usedCount: admin.firestore.FieldValue.increment(1)
     });
+
+    // Record a join intent for repairInviteJoin: live app builds create the new user's
+    // profile without an organization_id, so the server attaches it from this record.
+    // Best-effort only; a failure here must never change the response.
+    try {
+      await db.collection('invite_join_intents').add({
+        code: normalized,
+        inviteCodeId: codeDoc.id,
+        organizationId: codeData.organizationId,
+        role: codeData.role || 'member',
+        validatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        consumed: false,
+      });
+    } catch (intentError) {
+      console.error('Error recording invite join intent:', intentError);
+    }
     
     res.status(200).json({
       valid: true,
@@ -154,19 +230,49 @@ exports.generateInviteCode = functions.https.onRequest(async (req, res) => {
     const decodedToken = await admin.auth().verifyIdToken(idToken);
     const userId = decodedToken.uid;
     
-    // Check if user is admin
+    // Check if user is admin (or super admin)
     const userDoc = await db.collection('users').doc(userId).get();
-    if (!userDoc.exists || userDoc.data().role !== 'admin') {
+    const callerRole = userDoc.exists ? userDoc.data().role : null;
+    if (!userDoc.exists || (callerRole !== 'admin' && callerRole !== 'super_admin')) {
       res.status(403).json({ error: 'Only admins can generate invite codes' });
       return;
     }
-    
+    const organizationId = profileOrgId(userDoc.data());
+    if (!organizationId) {
+      res.status(400).json({ error: 'Your account is not linked to an organization' });
+      return;
+    }
+    // Only an org that exists and passed review can invite people, so an account that
+    // names a fresh or made-up org id can't mint codes for it.
+    const orgDoc = await findInviteOrgDoc(organizationId);
+    const orgStatus = orgDoc ? orgDoc.data().status : null;
+    if (!orgDoc || orgStatus === 'pending' || orgStatus === 'rejected') {
+      res.status(403).json({ error: 'Your organization must be approved before it can invite members' });
+      return;
+    }
+    if (callerRole !== 'super_admin' &&
+        Date.now() - userDoc.createTime.toMillis() < NEW_PROFILE_INVITE_COOLDOWN_MS) {
+      const members = await db.collection('users')
+        .where('organization_id', '==', organizationId)
+        .limit(2)
+        .get();
+      if (members.docs.some(d => d.id !== userId)) {
+        res.status(403).json({ error: 'New accounts can create invite codes a few minutes after sign-up' });
+        return;
+      }
+    }
+
     const { role, expiresInDays, maxUses } = req.body;
-    const organizationId = userDoc.data().organization_id;
-    
+
     // Validate role
     if (!role || !['admin', 'security', 'member'].includes(role)) {
       res.status(400).json({ error: 'Invalid role' });
+      return;
+    }
+    // Only a super admin may mint codes that grant elevated roles. The app always
+    // requests 'member', so this does not affect any live-client flow.
+    if (role !== 'member' && callerRole !== 'super_admin') {
+      res.status(403).json({ error: 'You can only create member invite codes' });
       return;
     }
     
@@ -181,13 +287,13 @@ exports.generateInviteCode = functions.https.onRequest(async (req, res) => {
       isUnique = existing.empty;
     }
     
-    // Calculate expiration
-    let expiresAt = null;
-    if (expiresInDays && expiresInDays > 0) {
-      expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + expiresInDays);
-    }
-    
+    // Every code expires and has a use limit: at most 30 days and 50 uses (the app asks
+    // for 30 days and 10 uses).
+    const days = Math.min(Math.max(Number(expiresInDays) || 30, 1), 30);
+    const uses = Math.min(Math.max(Number(maxUses) || 10, 1), 50);
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + days);
+
     // Create invite code document
     const inviteData = {
       code,
@@ -195,113 +301,23 @@ exports.generateInviteCode = functions.https.onRequest(async (req, res) => {
       role,
       createdBy: userId,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      expiresAt: expiresAt ? admin.firestore.Timestamp.fromDate(expiresAt) : null,
-      maxUses: maxUses || null,
+      expiresAt: admin.firestore.Timestamp.fromDate(expiresAt),
+      maxUses: uses,
       usedCount: 0,
       isActive: true
     };
-    
+
     await codesRef.add(inviteData);
-    
+
     res.status(200).json({
       success: true,
       code,
       role,
-      expiresAt: expiresAt ? expiresAt.toISOString() : null,
-      maxUses: maxUses || null
+      expiresAt: expiresAt.toISOString(),
+      maxUses: uses
     });
   } catch (error) {
     console.error('Error generating invite code:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Keep old validateAccessCode for backward compatibility (temporary)
-exports.validateAccessCode = functions.https.onRequest(async (req, res) => {
-  // Set CORS headers
-  res.set('Access-Control-Allow-Origin', '*');
-  res.set('Access-Control-Allow-Methods', 'POST');
-  res.set('Access-Control-Allow-Headers', 'Content-Type');
-  
-  if (req.method === 'OPTIONS') {
-    res.status(204).send('');
-    return;
-  }
-
-  if (req.method !== 'POST') {
-    res.status(405).json({ error: 'Method not allowed' });
-    return;
-  }
-
-  try {
-    const { accessCode } = req.body;
-    
-    if (!accessCode || typeof accessCode !== 'string') {
-      res.status(400).json({ valid: false, error: 'Access code required' });
-      return;
-    }
-
-    const normalized = accessCode.trim().toUpperCase();
-    const codeData = ACCESS_CODES[normalized];
-    
-    if (codeData && codeData.valid) {
-      res.status(200).json({ valid: true, role: codeData.role });
-    } else {
-      res.status(200).json({ valid: false });
-    }
-  } catch (error) {
-    console.error('Error validating access code:', error);
-    res.status(500).json({ valid: false, error: 'Internal server error' });
-  }
-});
-
-// HTTPS function to get user profile
-exports.getUserProfile = functions.https.onRequest(async (req, res) => {
-  // Set CORS headers
-  res.set('Access-Control-Allow-Origin', '*');
-  res.set('Access-Control-Allow-Methods', 'POST');
-  res.set('Access-Control-Allow-Headers', 'Authorization, Content-Type');
-  
-  if (req.method === 'OPTIONS') {
-    res.status(204).send('');
-    return;
-  }
-
-  try {
-    // Get the auth token from the Authorization header
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      res.status(401).json({ error: 'Unauthorized' });
-      return;
-    }
-
-    const idToken = authHeader.split('Bearer ')[1];
-    
-    // Verify the token
-    const decodedToken = await admin.auth().verifyIdToken(idToken);
-    const userId = decodedToken.uid;
-    
-    console.log('Fetching profile for user:', userId);
-
-    // Fetch user document from Firestore
-    const userDoc = await db.collection('users').doc(userId).get();
-
-    if (!userDoc.exists) {
-      res.status(404).json({ error: 'User profile not found' });
-      return;
-    }
-
-    const userData = userDoc.data();
-    
-    res.status(200).json({
-      id: userId,
-      name: userData.name,
-      role: userData.role,
-      organizationId: userData.organization_id,
-      emailVerified: decodedToken.email_verified || false
-    });
-  } catch (error) {
-    console.error('Error fetching user profile:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -338,6 +354,32 @@ function setCorsHeaders(res) {
   res.set('Access-Control-Allow-Origin', '*');
   res.set('Access-Control-Allow-Methods', 'POST');
   res.set('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+}
+
+// Helper: the caller's organization id (the org's `id` FIELD value, e.g. 'org_<ms>'),
+// supporting both field spellings. null when the caller has no profile or org.
+async function getCallerOrgId(userId) {
+  const userDoc = await db.collection('users').doc(userId).get();
+  if (!userDoc.exists) return null;
+  const data = userDoc.data();
+  return data.organization_id || data.organizationId || null;
+}
+
+// Helper: resolve an organization by its doc id, falling back to its `id` field.
+// Returns { ref, data, docId } or null. Mirrors verifyOrganization's lookup so every
+// verification endpoint accepts the same organizationId the client already sends.
+async function resolveOrg(organizationId) {
+  const byDoc = await db.collection('organizations').doc(organizationId).get();
+  if (byDoc.exists) return { ref: byDoc.ref, data: byDoc.data(), docId: byDoc.id };
+  const q = await db.collection('organizations').where('id', '==', organizationId).limit(1).get();
+  if (!q.empty) return { ref: q.docs[0].ref, data: q.docs[0].data(), docId: q.docs[0].id };
+  return null;
+}
+
+// Helper: true when the caller belongs to the organization (compares the org's `id`
+// field to the caller's stored org id — the membership model the whole app uses).
+function callerBelongsToOrg(callerOrgId, orgData) {
+  return !!callerOrgId && !!orgData && orgData.id === callerOrgId;
 }
 
 // Helper: Check Google Places for a place of worship
@@ -545,6 +587,19 @@ exports.verifyOrganization = functions.https.onRequest(async (req, res) => {
       var orgDocId = orgDoc.id;
     }
 
+    // Only a member of this organization may submit it for verification. This blocks
+    // cross-org abuse: knocking any org back to 'pending' and burning Places quota.
+    const callerOrg = await getCallerOrgId(userId);
+    if (!callerBelongsToOrg(callerOrg, orgData)) {
+      res.status(403).json({ error: 'You can only verify your own organization' });
+      return;
+    }
+    // Never downgrade an organization that is already verified/active.
+    if (orgData.status === 'verified' || orgData.status === 'Active') {
+      res.status(200).json({ status: orgData.status, score: orgData.verificationScore || 0, alreadyVerified: true });
+      return;
+    }
+
     // Run Google Places check (always)
     const placesResult = await checkGooglePlaces(
       orgData.name, orgData.address, orgData.latitude, orgData.longitude
@@ -631,6 +686,13 @@ exports.sendOrgEmailVerification = functions.https.onRequest(async (req, res) =>
       return;
     }
 
+    // Only a member of this org may request a verification email for it.
+    const org = await resolveOrg(organizationId);
+    if (!org || !callerBelongsToOrg(await getCallerOrgId(userId), org.data)) {
+      res.status(403).json({ error: 'You can only verify your own organization' });
+      return;
+    }
+
     // Check for free email domains
     const domain = email.split('@')[1]?.toLowerCase();
     if (FREE_EMAIL_DOMAINS.includes(domain)) {
@@ -694,6 +756,13 @@ exports.confirmOrgEmail = functions.https.onRequest(async (req, res) => {
     const { organizationId, code } = req.body;
     if (!organizationId || !code) {
       res.status(400).json({ error: 'organizationId and code required' });
+      return;
+    }
+
+    // Only a member of this org may confirm its email code.
+    const org = await resolveOrg(organizationId);
+    if (!org || !callerBelongsToOrg(await getCallerOrgId(userId), org.data)) {
+      res.status(403).json({ error: 'You can only verify your own organization' });
       return;
     }
 
@@ -774,6 +843,13 @@ exports.confirmPhoneVerification = functions.https.onRequest(async (req, res) =>
     const { organizationId, phoneNumber } = req.body;
     if (!organizationId || !phoneNumber) {
       res.status(400).json({ error: 'organizationId and phoneNumber required' });
+      return;
+    }
+
+    // Only a member of this org may record its phone verification.
+    const org = await resolveOrg(organizationId);
+    if (!org || !callerBelongsToOrg(await getCallerOrgId(userId), org.data)) {
+      res.status(403).json({ error: 'You can only verify your own organization' });
       return;
     }
 
@@ -865,4 +941,458 @@ exports.reviewOrganization = functions.https.onRequest(async (req, res) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+// =====================================================================================
+// Apple In-App Purchase — receipt validation and Server Notifications V2
+//
+// validateAppleReceipt: called by the client after a sandbox/production purchase.
+//   Verifies the receipt with Apple's verifyReceipt endpoint using APPLE_SHARED_SECRET,
+//   then writes the resulting subscription state to the user's org doc.
+//
+// appleNotifications:   App Store Server Notifications V2 endpoint configured in
+//   App Store Connect → App Information → App Store Server Notifications.
+//   Decodes and verifies the signed JWS payload, then keeps Firestore in sync with
+//   renewals, cancellations, expirations, refunds, and product changes.
+//
+// Set in functions/.env:
+//   APPLE_SHARED_SECRET=<App-Specific Shared Secret from App Store Connect>
+// =====================================================================================
+const crypto = require('crypto');
+
+const PRODUCT_TO_PLAN = {
+  '001': { plan: 'individual', seats: 3 },
+  '002': { plan: 'team', seats: 15 },
+  '003': { plan: 'enterprise', seats: 30 },
+};
+
+const APPLE_VERIFY_PRODUCTION = 'https://buy.itunes.apple.com/verifyReceipt';
+const APPLE_VERIFY_SANDBOX = 'https://sandbox.itunes.apple.com/verifyReceipt';
+
+// Apple Root CA - G3 (ECC). Used to anchor App Store Server Notifications V2 JWS
+// signature chains. Public certificate from https://www.apple.com/certificateauthority/
+const APPLE_ROOT_CA_G3 = `-----BEGIN CERTIFICATE-----
+MIICQzCCAcmgAwIBAgIILcX8iNLFS5UwCgYIKoZIzj0EAwMwZzEbMBkGA1UEAwwS
+QXBwbGUgUm9vdCBDQSAtIEczMSYwJAYDVQQLDB1BcHBsZSBDZXJ0aWZpY2F0aW9u
+IEF1dGhvcml0eTETMBEGA1UECgwKQXBwbGUgSW5jLjELMAkGA1UEBhMCVVMwHhcN
+MTQwNDMwMTgxOTA2WhcNMzkwNDMwMTgxOTA2WjBnMRswGQYDVQQDDBJBcHBsZSBS
+b290IENBIC0gRzMxJjAkBgNVBAsMHUFwcGxlIENlcnRpZmljYXRpb24gQXV0aG9y
+aXR5MRMwEQYDVQQKDApBcHBsZSBJbmMuMQswCQYDVQQGEwJVUzB2MBAGByqGSM49
+AgEGBSuBBAAiA2IABJjpLz1AcqTtkyJygRMc3RCV8cWjTnHcFBbZDuWmBSp3ZHtf
+TjjTuxxEtX/1H7YyYl3J6YRbTzBPEVoA/VhYDKX1DyxNB0cTddqXl5dvMVztK517
+IDvYuVTZXpmkOlEKMaNCMEAwHQYDVR0OBBYEFLuw3qFYM4iapIqZ3r6966/ayySr
+MA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0PAQH/BAQDAgEGMAoGCCqGSM49BAMDA2gA
+MGUCMQCD6cHEFl4aXTQY2e3v9GwOAEZLuN+yRhHFD/3meoyhpmvOwgPUnPWTxnS4
+at+qIxUCMG1mihDK1A3UT82NQz60imOlM27jbdoXt2QfyFMm+YhidDkLF1vLUagM
+6BgD56KyKA==
+-----END CERTIFICATE-----`;
+
+async function findOrgRefForUser(firebaseUid) {
+  const userDoc = await db.collection('users').doc(firebaseUid).get();
+  if (!userDoc.exists) return null;
+  const orgId = profileOrgId(userDoc.data());
+  if (!orgId) return null;
+  return findOrgRef(orgId);
+}
+
+async function findOrgRef(orgId) {
+  const orgsSnapshot = await db.collection('organizations').where('id', '==', orgId).limit(1).get();
+  if (!orgsSnapshot.empty) return orgsSnapshot.docs[0].ref;
+  const directRef = db.collection('organizations').doc(orgId);
+  const directSnap = await directRef.get();
+  return directSnap.exists ? directRef : null;
+}
+
+async function findOrgRefByOriginalTxId(originalTransactionId) {
+  const snap = await db.collection('organizations')
+    .where('appleOriginalTransactionId', '==', originalTransactionId)
+    .limit(1)
+    .get();
+  return snap.empty ? null : snap.docs[0].ref;
+}
+
+async function verifyReceiptWithApple(receipt) {
+  const sharedSecret = process.env.APPLE_SHARED_SECRET;
+  if (!sharedSecret) {
+    throw new Error('APPLE_SHARED_SECRET not configured');
+  }
+  const body = {
+    'receipt-data': receipt,
+    password: sharedSecret,
+    'exclude-old-transactions': true,
+  };
+  let response = await fetch(APPLE_VERIFY_PRODUCTION, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  let json = await response.json();
+  // 21007 = receipt is from sandbox but sent to production. Retry against sandbox.
+  if (json && json.status === 21007) {
+    response = await fetch(APPLE_VERIFY_SANDBOX, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    json = await response.json();
+  }
+  return json;
+}
+
+function pickLatestSubscription(verifyResponse) {
+  const latest = verifyResponse?.latest_receipt_info;
+  if (!Array.isArray(latest) || latest.length === 0) return null;
+  // Restrict to our products and pick the one with the largest expires_date_ms.
+  const ours = latest.filter(tx => PRODUCT_TO_PLAN[tx.product_id]);
+  if (!ours.length) return null;
+  ours.sort((a, b) => Number(b.expires_date_ms || 0) - Number(a.expires_date_ms || 0));
+  return ours[0];
+}
+
+exports.validateAppleReceipt = functions.https.onRequest(async (req, res) => {
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  try {
+    const authHeader = req.headers.authorization || '';
+    if (!authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    const idToken = authHeader.slice('Bearer '.length);
+    const decoded = await admin.auth().verifyIdToken(idToken);
+    const uid = decoded.uid;
+
+    const { jws } = req.body || {};
+    if (!jws || typeof jws !== 'string') {
+      return res.status(400).json({ error: 'Missing jws' });
+    }
+
+    // Only an org admin buys or restores the org's plan (the paywall is admin-only).
+    const callerDoc = await db.collection('users').doc(uid).get();
+    const callerRole = callerDoc.exists ? callerDoc.data().role : null;
+    if (callerRole !== 'admin' && callerRole !== 'super_admin') {
+      return res.status(403).json({ valid: false, error: 'Only an organization admin can activate a subscription' });
+    }
+
+    const orgRef = await findOrgRefForUser(uid);
+    if (!orgRef) {
+      return res.status(404).json({ valid: false, error: 'No organization for user' });
+    }
+
+    // Verify the Apple-signed transaction JWS and extract transaction info.
+    // This is the same JWS verification path appleNotifications uses — same
+    // cert chain rooted at Apple Root CA G3, same signature check.
+    let tx;
+    try {
+      tx = decodeAndVerifyJWS(jws);
+    } catch (error) {
+      console.warn('Transaction JWS verification failed:', error.message);
+      return res.status(200).json({ valid: false, error: 'Invalid signature' });
+    }
+
+    const productId = tx.productId;
+    const originalTransactionId = tx.originalTransactionId;
+    const expiresMs = Number(tx.expiresDate || 0);
+
+    // Every App Store transaction is signed by the same Apple chain, so a transaction
+    // from another developer's app with a matching product id would otherwise verify.
+    if (tx.bundleId !== APP_BUNDLE_ID || tx.type !== 'Auto-Renewable Subscription') {
+      return res.status(200).json({ valid: false, error: 'Not a HolyGuard subscription' });
+    }
+    if (!PRODUCT_TO_PLAN[productId]) {
+      return res.status(200).json({ valid: false, error: 'Unknown product' });
+    }
+    if (!originalTransactionId) {
+      return res.status(200).json({ valid: false, error: 'Missing originalTransactionId' });
+    }
+    if (!expiresMs || expiresMs <= Date.now()) {
+      return res.status(200).json({ valid: false, error: 'Subscription expired', expiresDateMs: expiresMs });
+    }
+
+    // Reject replay: a subscription already linked to a different org cannot be
+    // used to activate this one (one paid/sandbox subscription = one org).
+    const existingOrgRef = await findOrgRefByOriginalTxId(originalTransactionId);
+    if (existingOrgRef && existingOrgRef.path !== orgRef.path) {
+      return res.status(200).json({ valid: false, error: 'This subscription is already linked to another organization' });
+    }
+
+    const planInfo = PRODUCT_TO_PLAN[productId];
+    const nowIso = new Date().toISOString();
+    await orgRef.update({
+      subscriptionPlan: planInfo.plan,
+      subscriptionStatus: 'active',
+      maxSeats: planInfo.seats,
+      subscribedAt: nowIso,
+      subscriptionUpdatedAt: nowIso,
+      appleOriginalTransactionId: originalTransactionId,
+      appleProductId: productId,
+      appleExpiresDateMs: expiresMs || null,
+      appleEnvironment: tx.environment || null,
+    });
+
+    return res.status(200).json({
+      valid: true,
+      productId,
+      plan: planInfo.plan,
+      expiresDateMs: expiresMs || null,
+    });
+  } catch (error) {
+    console.error('validateAppleReceipt error:', error);
+    return res.status(500).json({ valid: false, error: 'Internal error' });
+  }
+});
+
+function base64UrlDecode(str) {
+  const padded = str.replace(/-/g, '+').replace(/_/g, '/');
+  return Buffer.from(padded, 'base64');
+}
+
+const APP_BUNDLE_ID = 'com.lonestardevops.holyguard';
+
+// DER of Apple's marker extension OID 1.2.840.113635.100.6.<n>.1. App Store signing
+// certificates carry n=11 and the Apple WWDR intermediate n=2; Apple's own server
+// library requires both, so a certificate Apple issued for anything else (Apple Pay,
+// push, code signing) under the same root can't sign a transaction.
+function appleMarkerOid(n) {
+  return Buffer.from([0x06, 0x0a, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x63, 0x64, 0x06, n, 0x01]);
+}
+const APP_STORE_SIGNING_OID = appleMarkerOid(0x0b);
+const APPLE_WWDR_INTERMEDIATE_OID = appleMarkerOid(0x02);
+
+function decodeAndVerifyJWS(jws) {
+  const parts = jws.split('.');
+  if (parts.length !== 3) {
+    throw new Error('Malformed JWS');
+  }
+  const [headerB64, payloadB64, signatureB64] = parts;
+  const header = JSON.parse(base64UrlDecode(headerB64).toString('utf8'));
+  if (header.alg !== 'ES256') {
+    throw new Error(`Unsupported alg: ${header.alg}`);
+  }
+  if (!Array.isArray(header.x5c) || header.x5c.length !== 3) {
+    throw new Error('x5c must hold the leaf, intermediate and root certificates');
+  }
+
+  const certs = header.x5c.map(c => new crypto.X509Certificate(Buffer.from(c, 'base64')));
+  const leaf = certs[0];
+  const intermediate = certs[1];
+  const claimedRoot = certs[2];
+  const trustedRoot = new crypto.X509Certificate(APPLE_ROOT_CA_G3);
+
+  if (intermediate && !leaf.verify(intermediate.publicKey)) {
+    throw new Error('Leaf cert not signed by intermediate');
+  }
+  if (claimedRoot && intermediate && !intermediate.verify(claimedRoot.publicKey)) {
+    throw new Error('Intermediate cert not signed by claimed root');
+  }
+  // The claimed root must byte-for-byte match Apple Root CA - G3.
+  const claimedRootDer = claimedRoot ? claimedRoot.raw : leaf.raw;
+  if (!Buffer.from(claimedRootDer).equals(Buffer.from(trustedRoot.raw))) {
+    throw new Error('Root cert does not match trusted Apple Root CA G3');
+  }
+  if (!Buffer.from(intermediate.raw).includes(APPLE_WWDR_INTERMEDIATE_OID)) {
+    throw new Error('Intermediate cert is not the Apple WWDR intermediate');
+  }
+  if (!Buffer.from(leaf.raw).includes(APP_STORE_SIGNING_OID)) {
+    throw new Error('Leaf cert is not an App Store signing certificate');
+  }
+
+  const signedData = Buffer.from(`${headerB64}.${payloadB64}`);
+  const signature = base64UrlDecode(signatureB64);
+  const valid = crypto.verify(
+    'sha256',
+    signedData,
+    { key: leaf.publicKey, dsaEncoding: 'ieee-p1363' },
+    signature,
+  );
+  if (!valid) {
+    throw new Error('JWS signature verification failed');
+  }
+
+  return JSON.parse(base64UrlDecode(payloadB64).toString('utf8'));
+}
+
+exports.appleNotifications = functions.https.onRequest(async (req, res) => {
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  let notification;
+  try {
+    const { signedPayload } = req.body || {};
+    if (!signedPayload || typeof signedPayload !== 'string') {
+      return res.status(400).json({ error: 'Missing signedPayload' });
+    }
+    notification = decodeAndVerifyJWS(signedPayload);
+  } catch (error) {
+    console.error('Failed to verify Apple notification JWS:', error.message);
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+
+  try {
+    const notificationType = notification.notificationType;
+    const subtype = notification.subtype;
+    const data = notification.data || {};
+
+    let txInfo = null;
+    if (data.signedTransactionInfo) {
+      try {
+        txInfo = decodeAndVerifyJWS(data.signedTransactionInfo);
+      } catch (error) {
+        console.error('Failed to decode signedTransactionInfo:', error.message);
+      }
+    }
+
+    const originalTransactionId = txInfo?.originalTransactionId;
+    if (!originalTransactionId) {
+      console.warn(`Notification ${notificationType} missing originalTransactionId`);
+      return res.status(200).json({ ok: true, ignored: 'no originalTransactionId' });
+    }
+    if (txInfo.bundleId !== APP_BUNDLE_ID) {
+      console.warn(`Notification ${notificationType} for another app (${txInfo.bundleId}), ignored`);
+      return res.status(200).json({ ok: true, ignored: 'other app' });
+    }
+
+    const orgRef = await findOrgRefByOriginalTxId(originalTransactionId);
+    if (!orgRef) {
+      console.warn(`No org for originalTransactionId ${originalTransactionId} on ${notificationType}`);
+      return res.status(200).json({ ok: true, ignored: 'no org matched' });
+    }
+    // A grandfathered org has no plan or seat cap, even if an old Apple subscription
+    // of its admin keeps renewing.
+    const grandfathered = (await orgRef.get()).data()?.grandfathered === true;
+
+    const productId = txInfo?.productId;
+    const planInfo = productId ? PRODUCT_TO_PLAN[productId] : null;
+    const expiresDateMs = txInfo?.expiresDate ? Number(txInfo.expiresDate) : null;
+    const nowIso = new Date().toISOString();
+
+    // The org is now active on txInfo's product.
+    const activePlanPatch = () => {
+      const patch = {
+        subscriptionStatus: 'active',
+        subscriptionUpdatedAt: nowIso,
+        appleOriginalTransactionId: originalTransactionId,
+      };
+      if (planInfo && !grandfathered) {
+        patch.subscriptionPlan = planInfo.plan;
+        patch.maxSeats = planInfo.seats;
+      }
+      if (productId) patch.appleProductId = productId;
+      if (expiresDateMs) patch.appleExpiresDateMs = expiresDateMs;
+      return patch;
+    };
+
+    switch (notificationType) {
+      case 'SUBSCRIBED':
+      case 'DID_RENEW':
+      case 'INTERACTIVE_RENEWAL':
+      case 'OFFER_REDEEMED': {
+        await orgRef.update(activePlanPatch());
+        break;
+      }
+      case 'DID_CHANGE_RENEWAL_STATUS': {
+        // AUTO_RENEW_DISABLED = user cancelled; access continues until expiry.
+        // AUTO_RENEW_ENABLED = uncancelled.
+        if (subtype === 'AUTO_RENEW_DISABLED') {
+          await orgRef.update({
+            subscriptionCancelledAt: nowIso,
+            subscriptionUpdatedAt: nowIso,
+          });
+        } else if (subtype === 'AUTO_RENEW_ENABLED') {
+          await orgRef.update({
+            subscriptionCancelledAt: admin.firestore.FieldValue.delete(),
+            subscriptionUpdatedAt: nowIso,
+          });
+        }
+        break;
+      }
+      case 'DID_CHANGE_RENEWAL_PREF': {
+        // An UPGRADE takes effect immediately (a new billing period on the new product),
+        // and txInfo is that new transaction, so apply its plan and seats now. A DOWNGRADE
+        // takes effect at the next renewal, which arrives as DID_RENEW.
+        if (subtype === 'UPGRADE' && planInfo && txInfo.isUpgraded !== true) {
+          await orgRef.update(activePlanPatch());
+        } else {
+          await orgRef.update({ subscriptionUpdatedAt: nowIso });
+        }
+        break;
+      }
+      case 'EXPIRED':
+      case 'GRACE_PERIOD_EXPIRED': {
+        await orgRef.update({
+          subscriptionStatus: 'expired',
+          subscriptionUpdatedAt: nowIso,
+        });
+        break;
+      }
+      case 'DID_FAIL_TO_RENEW': {
+        // Apple retries during grace period. Record billing issue but don't expire yet
+        // unless subtype indicates no grace period applies.
+        const patch = {
+          subscriptionBillingIssueAt: nowIso,
+          subscriptionUpdatedAt: nowIso,
+        };
+        if (subtype === 'GRACE_PERIOD' /* still in grace */) {
+          // leave status active
+        } else {
+          patch.subscriptionStatus = 'expired';
+        }
+        await orgRef.update(patch);
+        break;
+      }
+      case 'REFUND':
+      case 'REVOKE': {
+        await orgRef.update({
+          subscriptionStatus: 'expired',
+          subscriptionUpdatedAt: nowIso,
+        });
+        break;
+      }
+      case 'TEST': {
+        console.log('Apple notification TEST received');
+        return res.status(200).json({ ok: true, test: true });
+      }
+      default: {
+        console.log(`Apple notification ${notificationType} (${subtype || 'no subtype'}) — no state change applied`);
+        break;
+      }
+    }
+
+    return res.status(200).json({ ok: true });
+  } catch (error) {
+    console.error('appleNotifications handler error:', error);
+    return res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// =====================================================================================
+// Invite join repair
+//
+// repairInviteJoin: live app builds (v1.2.7) create users/{uid} with role '' and
+//   organization_id '' right after validateInviteCode succeeds, so new members land in
+//   no org. When exactly that sign-up profile is created, attach it to the org from the
+//   matching invite_join_intents records (written by validateInviteCode above), or flag
+//   it in invite_join_review/{uid} when they don't name a single org and role. Any other
+//   doc is left alone. Logic lives in inviteJoinRepair.js.
+// =====================================================================================
+const { onDocumentCreated } = require('firebase-functions/v2/firestore');
+const { createRepairInviteJoinHandler } = require('./inviteJoinRepair');
+
+exports.repairInviteJoin = onDocumentCreated(
+  {
+    document: 'users/{uid}',
+    database: '(default)',
+    region: 'us-central1', // must match the Firestore database location
+    // A failed run is redelivered: an unvetted claim must not keep its access. Both
+    // branches re-read the profile in their transactions, so a rerun is a no-op.
+    retry: true,
+  },
+  createRepairInviteJoinHandler({
+    db,
+    FieldValue: admin.firestore.FieldValue,
+    Timestamp: admin.firestore.Timestamp,
+    logger: console,
+  })
+);
 
