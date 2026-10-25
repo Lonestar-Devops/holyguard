@@ -1,0 +1,12 @@
+{
+  "name": "holyguard-rules-tests",
+  "private": true,
+  "description": "Emulator tests for firestore.rules and storage.rules (never touches production: uses a demo- project id)",
+  "scripts": {
+    "test": "firebase emulators:exec --config firebase.json --only firestore,storage --project demo-holyguard \"node --test test/*.test.js\""
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "5.0.2",
+    "firebase": "12.19.0"
+  }
+}

@@ -2,209 +2,365 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Helper: Get user's organization ID (supports both field names)
-    function getUserOrgId() {
-      let userData = get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
-      return ('organization_id' in userData) ? userData.organization_id : userData.organizationId;
+    // ---------------------------------------------------------------------------
+    // Helpers
+    // ---------------------------------------------------------------------------
+    function isSignedIn() {
+      return request.auth != null;
     }
 
-    // Helper: Check if user's organization is verified
-    function isOrgVerified() {
-      let orgId = getUserOrgId();
-      let orgs = getAfter(/databases/$(database)/documents/organizations/$(orgId));
-      return true; // Simplified - org verification enforced via status check below
+    // The caller's own profile. Callers of org-scoped rules always have a profile
+    // doc (it is created at sign-up before any org-scoped operation).
+    function myProfile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
 
-    // Helper: Check if user is super_admin
+    // The caller's organization *id-field value* (e.g. 'org_1792...'), supporting
+    // both field spellings (organization_id wins whenever it is present, even if '').
+    // A profile with no usable org ('' as left by an invite sign-up or a quarantine,
+    // 'removed', or a non-string) gets a per-caller sentinel that matches nothing, so
+    // org-scoped checks fail closed and org-less accounts never share a pseudo-org.
+    function myOrgId() {
+      let u = myProfile();
+      let o = ('organization_id' in u) ? u.organization_id
+            : (('organizationId' in u) ? u.organizationId : '');
+      return (o is string && o != '' && o != 'removed') ? o : ('__no_org__/' + request.auth.uid);
+    }
+
+    function myRole() {
+      let u = myProfile();
+      return ('role' in u) ? u.role : '';
+    }
+
     function isSuperAdmin() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'super_admin';
+      return myRole() == 'super_admin';
     }
 
+    function isAdmin() {
+      return myRole() == 'admin' || myRole() == 'super_admin';
+    }
+
+    // True when the organization document being accessed belongs to the caller.
+    // Compares the org's `id` FIELD to the caller's org id (both are 'org_<ms>'),
+    // which works for app-created orgs (random doc id, id field set) and
+    // script-provisioned orgs (doc id == id field) alike.
+    function ownsOrg(orgData) {
+      return ('id' in orgData) && orgData.id == myOrgId();
+    }
+
+    // A field is either absent on both the incoming and existing doc, or present
+    // on both and equal. Used to pin sensitive org fields on a client update.
+    function unchanged(f) {
+      return (f in request.resource.data) == (f in resource.data) &&
+        (!(f in resource.data) || request.resource.data[f] == resource.data[f]);
+    }
+
+    // An org id FIELD as the live client mints it ('org_' + Date.now()), within 15
+    // minutes of the request either way (tolerates device clock skew).
+    function isFreshOrgId(o) {
+      return o is string && o.matches('org_[0-9]{13}') &&
+        math.abs(int(o.split('_')[1]) - request.time.toMillis()) < 15 * 60 * 1000;
+    }
+
+    // An org minted as 'org_<ms>' at least an hour ago, or one with an older id format
+    // (those predate in-app sign-up). New profiles may only claim orgs under 15 minutes
+    // old, so a claimant never runs an org this old.
+    function isEstablishedOrgId(o) {
+      return !o.matches('org_[0-9]{13}') ||
+        request.time.toMillis() - int(o.split('_')[1]) > 60 * 60 * 1000;
+    }
+
+    // ---------------------------------------------------------------------------
     // User Profiles
+    //
+    // Any signed-in user can read profiles (the cross-org user directory / DM
+    // feature depends on it). role and organization_id are server-authoritative:
+    // they may be set once at create (never to super_admin), and the only later
+    // client change is an org admin removing a member — the repairInviteJoin
+    // trigger and admin SDK set/raise them out-of-band and bypass these rules.
+    // ---------------------------------------------------------------------------
     match /users/{userId} {
-      // Any authenticated user can read profiles (required for User Directory / DM feature).
-      // Profile data (name, role, org) is not considered sensitive.
-      allow read: if request.auth != null;
-      // Only the user can update their own profile
-      allow write: if request.auth != null && request.auth.uid == userId;
+      allow read: if isSignedIn();
+
+      // `id`, when present, must be the uid (the TOS screen's setDoc-merge fallback
+      // writes a profile without it). The legacy camelCase organizationId can never be
+      // set by a client: the AuthContext and validateAppleReceipt read it first.
+      allow create: if isSignedIn() && request.auth.uid == userId &&
+        (!('id' in request.resource.data) || request.resource.data.id == userId) &&
+        !('organizationId' in request.resource.data) &&
+        (!('role' in request.resource.data) ||
+          request.resource.data.role in ['', 'member', 'security', 'admin']) &&
+        (!('organization_id' in request.resource.data) ||
+          request.resource.data.organization_id == '' ||
+          isFreshOrgId(request.resource.data.organization_id));
+
+      // Later self-updates (TOS acceptance, profile fields) can never add, remove or
+      // change role or either org-id spelling (presence-aware, so legacy profiles that
+      // lack a field can still accept TOS). The live client only ever updates
+      // tos_accepted_at. `resource == null` only matches an updateDoc of a missing
+      // profile, which then fails NOT_FOUND without writing, so the TOS screen's
+      // setDoc-merge fallback runs exactly as under the old rules.
+      allow update: if isSignedIn() && request.auth.uid == userId &&
+        (resource == null ||
+         (unchanged('role') && unchanged('organization_id') && unchanged('organizationId')));
+
+      // Seat Management > Remove: an admin of the org takes a member or security member
+      // out of it, writing exactly {organization_id: 'removed', role: 'member'}. Never
+      // oneself, another admin or a super admin, and only in an established org.
+      allow update: if isSignedIn() && isAdmin() && request.auth.uid != userId &&
+        resource.data.get('role', '') in ['', 'member', 'security'] &&
+        resource.data.get('organization_id', '') == myOrgId() &&
+        isEstablishedOrgId(resource.data.organization_id) &&
+        request.resource.data.organization_id == 'removed' &&
+        request.resource.data.role == 'member' &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['organization_id', 'role']);
+
+      // No client deletes of any profile (own or others').
+      allow delete: if false;
     }
 
+    // ---------------------------------------------------------------------------
     // Alerts (org-scoped)
+    // ---------------------------------------------------------------------------
     match /alerts/{alertId} {
-      // Users can only read alerts from their own organization
-      allow read: if request.auth != null &&
-        resource.data.organizationId == getUserOrgId();
-      // Validate required fields to prevent malformed data
-      allow create: if request.auth != null &&
-        request.resource.data.reporterId is string &&
+      allow read: if isSignedIn() &&
+        resource.data.organizationId == myOrgId();
+
+      allow create: if isSignedIn() &&
+        request.resource.data.reporterId == request.auth.uid &&
         request.resource.data.title is string &&
         request.resource.data.timestamp != null &&
         request.resource.data.organizationId is string &&
-        request.resource.data.organizationId == getUserOrgId() &&
-        // latitude and longitude are optional but must be numbers if present
+        request.resource.data.organizationId == myOrgId() &&
         (!('latitude' in request.resource.data) || request.resource.data.latitude is number) &&
         (!('longitude' in request.resource.data) || request.resource.data.longitude is number) &&
         (!('policeIncidentNumber' in request.resource.data) || request.resource.data.policeIncidentNumber is string);
-      // Reporter or admin can update incidents (edit description, add photos, change category)
-      allow update: if request.auth != null &&
-        resource.data.organizationId == getUserOrgId() &&
-        (request.auth.uid == resource.data.reporterId ||
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'super_admin']);
-      allow delete: if request.auth != null &&
-        resource.data.organizationId == getUserOrgId() &&
-        (request.auth.uid == resource.data.reporterId ||
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'super_admin']);
+
+      // Reporter or an admin of the same org may edit; organization and reporter
+      // are pinned so an incident can't be moved between orgs or re-attributed.
+      allow update: if isSignedIn() &&
+        resource.data.organizationId == myOrgId() &&
+        request.resource.data.organizationId == resource.data.organizationId &&
+        // Null-tolerant pin: legacy alerts (pre 2026-01-26) may have no reporterId;
+        // those stay without one and only an admin of the alert's org may edit them.
+        request.resource.data.get('reporterId', null) == resource.data.get('reporterId', null) &&
+        (request.auth.uid == resource.data.get('reporterId', null) || isAdmin());
+
+      allow delete: if isSignedIn() &&
+        resource.data.organizationId == myOrgId() &&
+        (request.auth.uid == resource.data.reporterId || isAdmin());
     }
 
-    // Team Messages
+    // ---------------------------------------------------------------------------
+    // Team Messages (org-scoped channels)
+    // ---------------------------------------------------------------------------
     match /team_messages/{messageId} {
-      // Users can only read messages from their own organization
-      allow read: if request.auth != null &&
-        resource.data.organizationId == getUserOrgId();
-      // Validate message structure
-      allow create: if request.auth != null &&
+      allow read: if isSignedIn() &&
+        resource.data.organizationId == myOrgId();
+
+      allow create: if isSignedIn() &&
         request.resource.data.text is string &&
         request.resource.data.text.size() <= 500 &&
         request.resource.data.senderId == request.auth.uid &&
-        request.resource.data.organizationId is string;
-      allow update, delete: if request.auth != null && request.auth.uid == resource.data.senderId;
+        request.resource.data.organizationId is string &&
+        request.resource.data.organizationId == myOrgId();
+
+      // The live app never edits a team message. An update could move a message into
+      // another org's channel or rewrite its sender, so none is allowed.
+      allow update: if false;
+      allow delete: if isSignedIn() && request.auth.uid == resource.data.senderId;
     }
 
+    // ---------------------------------------------------------------------------
     // Organizations
+    //
+    // Readable by any signed-in user (the Network map lists all orgs). NOTE:
+    // sensitive fields (ein, phone, orgEmail, apple*) still live on this doc and
+    // are therefore readable cross-org — fully fixing that needs a data-model
+    // split and a client change, tracked separately.
+    // ---------------------------------------------------------------------------
     match /organizations/{orgId} {
-      // Anyone authenticated can read organizations (for map display)
-      allow read: if request.auth != null;
-      // Authenticated users can create during signup (status can be 'pending', 'Active', or 'verified')
-      allow create: if request.auth != null &&
+      allow read: if isSignedIn();
+
+      // New orgs are born 'pending' and plain. Privileged fields cannot be set at
+      // birth — status is advanced only by the verify/review functions and
+      // subscription fields only by the Apple functions (all admin SDK).
+      // The doc id must be an addDoc auto-id (never organizations/<someone's id field>)
+      // and the id field must be freshly minted, so no one can plant a twin or a squat
+      // of an existing org that lookups by id field / doc id would pick up.
+      allow create: if isSignedIn() &&
+        orgId.matches('[A-Za-z0-9]{20}') &&
+        isFreshOrgId(request.resource.data.id) &&
         request.resource.data.name is string &&
         request.resource.data.address is string &&
         request.resource.data.latitude is number &&
         request.resource.data.longitude is number &&
-        request.resource.data.status in ['pending', 'Active', 'verified'];
-      // Regular users can update name/address but NOT status
-      // Super admin can update anything
-      allow update: if request.auth != null && (
-        // Super admin can update anything
-        isSuperAdmin() ||
-        // Regular users can update but cannot change status
-        (request.resource.data.status == resource.data.status &&
-         request.resource.data.name is string &&
-         request.resource.data.address is string &&
-         request.resource.data.latitude is number &&
-         request.resource.data.longitude is number)
-      );
-      // Only super admin can delete organizations
-      allow delete: if request.auth != null && isSuperAdmin();
+        request.resource.data.status == 'pending' &&
+        !('grandfathered' in request.resource.data) &&
+        !('subscriptionStatus' in request.resource.data) &&
+        !('subscriptionPlan' in request.resource.data) &&
+        !('maxSeats' in request.resource.data) &&
+        !('appleOriginalTransactionId' in request.resource.data) &&
+        !('appleProductId' in request.resource.data) &&
+        !('appleExpiresDateMs' in request.resource.data) &&
+        (!('verificationScore' in request.resource.data) || request.resource.data.verificationScore == 0) &&
+        (!('created_at' in request.resource.data) || request.resource.data.created_at == request.time) &&
+        (!('verificationSubmittedAt' in request.resource.data) ||
+          request.resource.data.verificationSubmittedAt == request.time);
 
-      // Verification subcollection - only admin SDK (Cloud Functions) writes
+      // Super admin: anything. Otherwise: only a member of THIS org, and only the
+      // map/display fields (name/address/lat/lng) may change — every sensitive
+      // field is pinned to its current value. The live client's only org update
+      // is Settings → Update Organization writing exactly those four fields.
+      // A legacy org doc with no `id` field is matched by its doc id (its members carry
+      // the doc id); orgs that have an id field are only ever matched by that field.
+      allow update: if isSignedIn() && (
+        isSuperAdmin() ||
+        ( ( ownsOrg(resource.data) ||
+            (!('id' in resource.data) && orgId == myOrgId()) ) &&
+          request.resource.data.name is string &&
+          request.resource.data.address is string &&
+          request.resource.data.latitude is number &&
+          request.resource.data.longitude is number &&
+          request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['name', 'address', 'latitude', 'longitude']) )
+      );
+
+      allow delete: if isSignedIn() && isSuperAdmin();
+
+      // Verification subcollection is written only by Cloud Functions (admin SDK).
+      // The plaintext email code is never client-readable; the 'checks' doc is
+      // readable by the org's own members or a super admin (AdminReviewScreen).
       match /verification/{docId} {
-        allow read: if request.auth != null;
-        allow write: if false; // Only admin SDK writes here
+        allow read: if isSignedIn() && docId != 'emailCode' && (
+          isSuperAdmin() ||
+          get(/databases/$(database)/documents/organizations/$(orgId)).data.id == myOrgId()
+        );
+        allow write: if false;
       }
     }
 
-    // Invite Codes
+    // ---------------------------------------------------------------------------
+    // Invite Codes — written only by the generateInviteCode function (admin SDK);
+    // read by an admin listing their own org's codes (InviteMembersScreen).
+    // validateInviteCode reads them server-side (admin SDK), so no client read of
+    // another org's code is needed.
+    // ---------------------------------------------------------------------------
     match /invite_codes/{codeId} {
-      // Anyone authenticated can read (needed for validation)
-      allow read: if request.auth != null;
-      // Only admins can create invite codes
-      allow create: if request.auth != null &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'super_admin'];
-      // Only the creator or admin can update/delete
-      allow update, delete: if request.auth != null &&
-        (resource.data.createdBy == request.auth.uid ||
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'super_admin']);
+      allow read: if isSignedIn() && resource.data.organizationId == myOrgId();
+      allow create, update, delete: if false;
     }
 
-    // Channels
+    // ---------------------------------------------------------------------------
+    // Channels (org-scoped; admins manage)
+    // ---------------------------------------------------------------------------
     match /channels/{channelId} {
-      // Anyone authenticated can read channels
-      allow read: if request.auth != null;
-      // Admins can create channels
-      allow create: if request.auth != null &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'super_admin'] &&
+      allow read: if isSignedIn() && resource.data.organizationId == myOrgId();
+
+      allow create: if isSignedIn() && isAdmin() &&
         request.resource.data.name is string &&
-        request.resource.data.organizationId is string;
-      // Only admins can delete channels
-      allow delete: if request.auth != null &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'super_admin'];
+        request.resource.data.organizationId is string &&
+        request.resource.data.organizationId == myOrgId();
+
+      allow update: if isSignedIn() && isAdmin() &&
+        resource.data.organizationId == myOrgId() &&
+        request.resource.data.organizationId == resource.data.organizationId;
+
+      allow delete: if isSignedIn() && isAdmin() &&
+        resource.data.organizationId == myOrgId();
     }
 
+    // ---------------------------------------------------------------------------
     // DM Invites
+    // ---------------------------------------------------------------------------
     match /dm_invites/{inviteId} {
-      // Users can read invites they sent or received
-      allow read: if request.auth != null &&
+      allow read: if isSignedIn() &&
         (request.auth.uid == resource.data.fromUserId ||
          request.auth.uid == resource.data.toUserId);
-      // Users can create invites they are sending
-      allow create: if request.auth != null &&
+
+      allow create: if isSignedIn() &&
         request.resource.data.fromUserId == request.auth.uid &&
         request.resource.data.toUserId is string &&
         request.resource.data.status == 'pending';
-      // Only recipient can update (accept/decline)
-      allow update: if request.auth != null &&
+
+      allow update: if isSignedIn() &&
         request.auth.uid == resource.data.toUserId &&
-        resource.data.status == 'pending';
+        resource.data.status == 'pending' &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']) &&
+        request.resource.data.status in ['accepted', 'declined'];
     }
 
+    // ---------------------------------------------------------------------------
     // Conversations
+    // ---------------------------------------------------------------------------
     match /conversations/{conversationId} {
-      // Users can read conversations they are part of
-      allow read: if request.auth != null &&
+      allow read: if isSignedIn() &&
         request.auth.uid in resource.data.participants;
-      // Users can create conversations they are part of
-      allow create: if request.auth != null &&
+
+      allow create: if isSignedIn() &&
         request.auth.uid in request.resource.data.participants &&
         request.resource.data.participants.size() == 2;
-      // Users can update conversations they are part of (for last message)
-      allow update: if request.auth != null &&
-        request.auth.uid in resource.data.participants;
+
+      allow update: if isSignedIn() &&
+        request.auth.uid in resource.data.participants &&
+        request.resource.data.participants == resource.data.participants;
     }
 
-    // Direct Messages
+    // ---------------------------------------------------------------------------
+    // Direct Messages — sender must be a participant of the conversation
+    // ---------------------------------------------------------------------------
     match /direct_messages/{messageId} {
-      // Users can only read messages from conversations they participate in
-      allow read: if request.auth != null &&
+      allow read: if isSignedIn() &&
         request.auth.uid in get(/databases/$(database)/documents/conversations/$(resource.data.conversationId)).data.participants;
-      // Users can create messages they are sending (text or image)
-      allow create: if request.auth != null &&
+
+      allow create: if isSignedIn() &&
         request.resource.data.senderId == request.auth.uid &&
         request.resource.data.text is string &&
         request.resource.data.text.size() <= 500 &&
         request.resource.data.conversationId is string &&
-        // imageUrl is optional
-        (!('imageUrl' in request.resource.data) || request.resource.data.imageUrl is string);
+        (!('imageUrl' in request.resource.data) || request.resource.data.imageUrl is string) &&
+        request.auth.uid in get(/databases/$(database)/documents/conversations/$(request.resource.data.conversationId)).data.participants;
+
+      allow update, delete: if false;
     }
 
-    // Watchlist Entries
+    // ---------------------------------------------------------------------------
+    // Watchlist Entries (org-scoped)
+    // ---------------------------------------------------------------------------
     match /watchlist/{entryId} {
-      // Users can only read watchlist entries from their organization
-      allow read: if request.auth != null &&
-        resource.data.organizationId == getUserOrgId();
-      // Authenticated users can create entries with required fields
-      allow create: if request.auth != null &&
+      allow read: if isSignedIn() &&
+        resource.data.organizationId == myOrgId();
+
+      allow create: if isSignedIn() &&
         request.resource.data.name is string &&
         request.resource.data.status is string &&
         request.resource.data.organizationId is string &&
+        request.resource.data.organizationId == myOrgId() &&
         request.resource.data.createdBy == request.auth.uid &&
         request.resource.data.createdAt != null;
-      // Creator or admin can update
-      allow update: if request.auth != null &&
-        (request.auth.uid == resource.data.createdBy ||
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'super_admin']);
-      // Creator or admin can delete
-      allow delete: if request.auth != null &&
-        (request.auth.uid == resource.data.createdBy ||
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'super_admin']);
+
+      allow update: if isSignedIn() &&
+        resource.data.organizationId == myOrgId() &&
+        request.resource.data.organizationId == resource.data.organizationId &&
+        request.resource.data.get('createdBy', null) == resource.data.get('createdBy', null) &&
+        (request.auth.uid == resource.data.get('createdBy', null) || isAdmin());
+
+      allow delete: if isSignedIn() &&
+        resource.data.organizationId == myOrgId() &&
+        (request.auth.uid == resource.data.createdBy || isAdmin());
     }
 
-    // Resources
+    // ---------------------------------------------------------------------------
+    // Resources (shared across all organizations)
+    // Training and safety posts are a network-wide library: every signed-in user
+    // reads them all (the live ResourcesScreen lists the whole collection, newest
+    // first). A post's organizationId can only be its poster's own org or ''; the
+    // organizationName / postedByName it displays are not checked.
+    // ---------------------------------------------------------------------------
     match /resources/{resourceId} {
-      // Users can only read resources from their organization
-      allow read: if request.auth != null &&
-        resource.data.organizationId == getUserOrgId();
-      // All authenticated users can create resources
-      allow create: if request.auth != null &&
+      allow read: if isSignedIn();
+
+      allow create: if isSignedIn() &&
         request.resource.data.title is string &&
         request.resource.data.title.size() <= 100 &&
         request.resource.data.description is string &&
@@ -212,37 +368,64 @@ service cloud.firestore {
         request.resource.data.category is string &&
         request.resource.data.postedBy == request.auth.uid &&
         request.resource.data.organizationId is string &&
+        // The live CreateResource sends organizationId '' for every profile without a
+        // camelCase organizationId (decompiled.js 674396-674403).
+        (request.resource.data.organizationId == myOrgId() ||
+         request.resource.data.organizationId == '') &&
         request.resource.data.timestamp != null;
-      // Only poster or admin can delete
-      allow delete: if request.auth != null &&
-        (request.auth.uid == resource.data.postedBy ||
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'super_admin']);
+
+      // The poster, an admin of the post's org, or a super admin. Posts saved with
+      // organizationId '' have no org admin, only their poster.
+      allow delete: if isSignedIn() &&
+        (request.auth.uid == resource.data.get('postedBy', null) ||
+         (resource.data.organizationId == myOrgId() && isAdmin()) ||
+         isSuperAdmin());
     }
 
-    // Mail collection (for Firebase Trigger Email extension)
+    // ---------------------------------------------------------------------------
+    // Mail (Trigger Email) — enqueued only by Cloud Functions (admin SDK)
+    // ---------------------------------------------------------------------------
     match /mail/{mailId} {
-      allow create: if request.auth != null;
-      allow read: if false;
+      allow read, create, update, delete: if false;
     }
 
-    // Redemption keys — authenticated users can read and update (to redeem)
+    // ---------------------------------------------------------------------------
+    // Redemption keys — server-authoritative. Only a super admin may read or burn a
+    // key from the client (the in-app redeem a super admin has today; every other
+    // caller's redeem could never grandfather an org anyway). Grandfather orgs with
+    // the admin-SDK scripts instead.
+    // ---------------------------------------------------------------------------
     match /redemption_keys/{keyId} {
-      allow read: if request.auth != null;
-      allow update: if request.auth != null &&
+      allow read: if isSignedIn() && isSuperAdmin();
+      allow update: if isSignedIn() && isSuperAdmin() &&
         resource.data.used == false &&
         request.resource.data.used == true &&
         request.resource.data.redeemedBy == request.auth.uid;
       allow create, delete: if false;
     }
 
-    // Admin audit logs — immutable, write-only for authenticated users, read-only for super_admins
+    // ---------------------------------------------------------------------------
+    // Admin audit logs — appended only by a super admin; immutable; super-admin
+    // read only.
+    // ---------------------------------------------------------------------------
     match /admin_logs/{logId} {
-      allow read: if request.auth != null && isSuperAdmin();
-      allow create: if request.auth != null &&
+      allow read: if isSignedIn() && isSuperAdmin();
+      allow create: if isSignedIn() && isSuperAdmin() &&
         request.resource.data.action is string &&
         request.resource.data.performedBy == request.auth.uid &&
         request.resource.data.timestamp != null;
-      allow update, delete: if false; // Audit logs are immutable
+      allow update, delete: if false;
+    }
+
+    // ---------------------------------------------------------------------------
+    // Server-only collections for the invite-join repair pipeline. Written by the
+    // validateInviteCode function and the repairInviteJoin trigger (admin SDK).
+    // ---------------------------------------------------------------------------
+    match /invite_join_intents/{intentId} {
+      allow read, write: if false;
+    }
+    match /invite_join_review/{uid} {
+      allow read, write: if false;
     }
   }
 }

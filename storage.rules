@@ -1,25 +1,42 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
+
+    // Shared image buckets. A write is allowed only when no object yet exists at
+    // the path (resource == null → create-only) and the upload is an image under
+    // 5MB. This blocks overwriting or deleting another user's incident / DM /
+    // resource / watchlist photo.
+    //
+    // NOTE: reads stay open to any signed-in user because the object paths carry
+    // no organization segment — scoping reads per-org requires moving uploads
+    // under an org-prefixed path, which is a client change (tracked separately).
+
+    function isNewImageUnder5MB() {
+      return resource == null
+        && request.resource.size <= 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+    }
+
     match /incidents/{allPaths=**} {
       allow read: if request.auth != null;
-      allow write: if request.auth != null 
-        && request.resource.size < 5 * 1024 * 1024  // Max 5MB
-        && request.resource.contentType.matches('image/.*');  // Only images
+      allow write: if request.auth != null && isNewImageUnder5MB();
     }
-    
+
     match /direct_messages/{allPaths=**} {
       allow read: if request.auth != null;
-      allow write: if request.auth != null 
-        && request.resource.size < 5 * 1024 * 1024  // Max 5MB
-        && request.resource.contentType.matches('image/.*');  // Only images
+      allow write: if request.auth != null && isNewImageUnder5MB();
     }
-    
+
     match /resources/{allPaths=**} {
       allow read: if request.auth != null;
-      allow write: if request.auth != null 
-        && request.resource.size < 5 * 1024 * 1024  // Max 5MB
-        && request.resource.contentType.matches('image/.*');  // Only images
+      allow write: if request.auth != null && isNewImageUnder5MB();
+    }
+
+    // Watchlist photos had no match block before, so these uploads were denied
+    // (a latent bug). Allow create-only image uploads like the others.
+    match /watchlist/{allPaths=**} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && isNewImageUnder5MB();
     }
   }
 }
