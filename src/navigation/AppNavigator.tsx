@@ -23,6 +23,7 @@ import { DemoSelectorScreen } from '../screens/DemoSelectorScreen';
 import { DemoSchoolGuardScreen } from '../screens/DemoSchoolGuardScreen';
 import { DemoCompanyGuardScreen } from '../screens/DemoCompanyGuardScreen';
 import { SeatManagementScreen } from '../screens/SeatManagementScreen';
+import { PaywallScreen } from '../screens/PaywallScreen';
 import { useAuth } from '../context/AuthContext';
 import { theme } from '../theme';
 
@@ -30,7 +31,12 @@ const Tab = createBottomTabNavigator();
 const TeamStack = createStackNavigator();
 const DashboardStack = createStackNavigator();
 const DMStack = createStackNavigator();
-const ResourcesStack = createStackNavigator();
+type ResourcesStackParamList = {
+  ResourcesMain: undefined;
+  CreateResource: undefined;
+  ResourceDetail: { resourceId: string };
+};
+const ResourcesStack = createStackNavigator<ResourcesStackParamList>();
 const WatchlistStack = createStackNavigator();
 
 const TeamNavigator = () => {
@@ -60,6 +66,11 @@ const DashboardNavigator = () => {
       <DashboardStack.Screen name="DemoCompanyGuard" component={DemoCompanyGuardScreen} />
       <DashboardStack.Screen name="CreateWatchlistEntry" component={CreateWatchlistEntryScreen} />
       <DashboardStack.Screen name="SeatManagement" component={SeatManagementScreen} />
+      <DashboardStack.Screen
+        name="SubscriptionPlans"
+        component={PaywallScreen}
+        options={{ headerShown: true, title: 'Subscription Plans' }}
+      />
     </DashboardStack.Navigator>
   );
 };

@@ -1,25 +1,16 @@
 import React, { useEffect } from 'react';
-console.log('[App] JS Bundle is executing!');
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { StatusBar } from 'expo-status-bar';
-import Purchases from 'react-native-purchases';
 import { RootNavigator } from './src/navigation/RootNavigator';
 import { AuthProvider } from './src/context/AuthContext';
-import { REVENUECAT_API_KEY } from './src/config/keys';
-import { logger } from './src/utils/logger';
+import { initIAP } from './src/config/iap';
 
 export default function App() {
   useEffect(() => {
-    const initRC = async () => {
-      try {
-        Purchases.configure({ apiKey: REVENUECAT_API_KEY });
-        logger.log('RevenueCat configured');
-      } catch (error) {
-        logger.error('RevenueCat config error:', error);
-      }
-    };
-    initRC();
+    // Open the StoreKit connection once at launch. initIAP() is memoized and never
+    // rejects. No cleanup: the connection must never be ended (no endConnection()).
+    initIAP();
   }, []);
 
   return (

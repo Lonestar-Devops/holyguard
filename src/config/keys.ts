@@ -1,15 +1,11 @@
 import Constants from 'expo-constants';
 
-// Google Maps/Places API key for runtime use.
-// The authoritative source is app.json (required by Expo for native Maps SDK).
-// This reads from the Expo config at runtime so the key is defined in one place.
+// Google Maps/Places API key for runtime HTTP calls (Places, Geocoding).
+// Lives under `extra` in app.config.js: ios.config.* is stripped from the
+// embedded manifest in release builds, so it cannot be read from there.
 export const GOOGLE_PLACES_API_KEY: string =
-  Constants.expoConfig?.ios?.config?.googleMapsApiKey ?? '';
+  Constants.expoConfig?.extra?.googleMapsApiKey ?? '';
 
 // Mapbox access token for map display.
 export const MAPBOX_ACCESS_TOKEN: string =
   Constants.expoConfig?.extra?.mapboxAccessToken ?? '';
-
-// RevenueCat API key for in-app subscriptions.
-export const REVENUECAT_API_KEY: string =
-  Constants.expoConfig?.extra?.revenueCatApiKey ?? '';

@@ -46,15 +46,15 @@ export const RootNavigator = () => {
                     <PendingApprovalScreen />
                 ) : user.organizationStatus === 'rejected' ? (
                     <RejectedScreen />
-                ) : user.subscriptionStatus === 'expired' || user.subscriptionStatus === 'cancelled' ? (
-                    // Admins see the paywall to subscribe; members see an info screen
-                    user.role === 'admin' || user.role === 'super_admin' ? (
-                        <PaywallScreen />
-                    ) : (
-                        <SubscriptionExpiredScreen />
-                    )
-                ) : (
+                ) : user.subscriptionStatus === 'active' ? (
+                    // Paid, or grandfathered (AuthContext maps grandfathered orgs to 'active')
                     <AppNavigator />
+                ) : user.role === 'admin' || user.role === 'super_admin' ? (
+                    // Any other status, including none yet: admins see the paywall to
+                    // subscribe; members see an info screen
+                    <PaywallScreen />
+                ) : (
+                    <SubscriptionExpiredScreen />
                 )
             ) : (
                 <AuthStack />

@@ -4,9 +4,8 @@ import { Alert } from 'react-native';
 import { UserProfile } from '../types';
 import { auth, db } from '../config/firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
+import { doc, getDoc, collection, query, where, getDocs, type DocumentData } from 'firebase/firestore';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import Purchases from 'react-native-purchases';
 
 interface AuthContextData {
     user: UserProfile | null;
@@ -51,12 +50,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // Listen for auth changes
         const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
             if (firebaseUser) {
-                // Identify user in RevenueCat so purchases are tied to their account
-                try {
-                    await Purchases.logIn(firebaseUser.uid);
-                } catch (e) {
-                    logger.error('RevenueCat login error:', e);
-                }
                 await fetchUserProfile(firebaseUser.uid);
             } else {
                 setUser(null);
@@ -81,7 +74,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             }
 
             const userData = userDoc.data();
-            const orgId = userData.organizationId || userData.organization_id || 'default-org';
+            // The org as the security rules and Cloud Functions read it: organization_id wins
+            // whenever present, and '' or 'removed' means no org.
+            const profileOrgId = 'organization_id' in userData ? userData.organization_id : userData.organizationId;
+            const orgId =
+                typeof profileOrgId === 'string' && profileOrgId !== '' && profileOrgId !== 'removed'
+                    ? profileOrgId
+                    : 'default-org';
 
             // Fetch organization status and subscription info
             let orgStatus: 'pending' | 'verified' | 'rejected' = 'verified';
@@ -91,25 +90,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             let maxSeats: number | undefined = undefined;
 
             if (orgId && orgId !== 'default-org') {
-                // Try to find org by querying the id field (existing pattern)
+                // Find the org by its id field (existing pattern); a legacy org doc
+                // with no id field is found by its doc id instead.
                 const orgsQuery = query(collection(db, 'organizations'), where('id', '==', orgId));
                 const orgSnapshot = await getDocs(orgsQuery);
+                let orgData: DocumentData | null = null;
                 if (!orgSnapshot.empty) {
-                    const orgData = orgSnapshot.docs[0].data();
+                    orgData = orgSnapshot.docs[0].data();
+                } else {
+                    const orgDocSnap = await getDoc(doc(db, 'organizations', orgId));
+                    if (orgDocSnap.exists()) {
+                        orgData = orgDocSnap.data();
+                    }
+                }
+
+                if (orgData) {
                     orgStatus = mapOrgStatus(orgData.status);
                     orgName = orgData.name || '';
+                    // The app only reads these; the server sets them (validateAppleReceipt
+                    // and the App Store notifications endpoint).
                     subscriptionPlan = orgData.subscriptionPlan || undefined;
                     subscriptionStatus = orgData.subscriptionStatus || undefined;
                     maxSeats = orgData.maxSeats || undefined;
 
-                    // Grandfathered orgs bypass subscription entirely
+                    // Grandfathered orgs count as active without a subscription
                     if (orgData.grandfathered === true) {
-                        subscriptionStatus = undefined;
+                        subscriptionStatus = 'active';
                         subscriptionPlan = undefined;
-                    } else if (orgStatus === 'verified' && subscriptionStatus === 'expired') {
-                        // Keep expired status — they had a plan that lapsed
-                    } else if (orgStatus === 'verified' && subscriptionStatus === 'cancelled') {
-                        // Keep cancelled status
                     }
                 }
             }

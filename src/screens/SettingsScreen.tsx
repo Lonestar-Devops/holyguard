@@ -16,7 +16,7 @@ interface SettingsScreenProps {
 }
 
 export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) => {
-  const { user, logout, refreshProfile } = useAuth();
+  const { user, logout } = useAuth();
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -36,8 +36,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
   const [showDemoModal, setShowDemoModal] = useState(false);
   const [demoPassword, setDemoPassword] = useState('');
   const [demoError, setDemoError] = useState('');
-  const [secretMode, setSecretMode] = useState<'menu' | 'demo' | 'redeem'>('menu');
-  const [redeemLoading, setRedeemLoading] = useState(false);
+  const [secretMode, setSecretMode] = useState<'menu' | 'demo'>('menu');
   const tapCountRef = useRef(0);
   const lastTapTimeRef = useRef(0);
   const shakeAnim = useRef(new Animated.Value(0)).current;
@@ -79,76 +78,6 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
       setDemoError('Invalid code');
       setDemoPassword('');
       shakeInput();
-    }
-  };
-
-  const handleRedeemSubmit = async () => {
-    const code = demoPassword.trim().toUpperCase();
-    if (!code) {
-      setDemoError('Enter a key');
-      return;
-    }
-
-    if (!user?.organizationId || user.organizationId === 'default-org') {
-      setDemoError('No organization found');
-      return;
-    }
-
-    setRedeemLoading(true);
-    try {
-      // Look up the key in Firestore
-      const keysQuery = query(collection(db, 'redemption_keys'), where('code', '==', code));
-      const keySnapshot = await getDocs(keysQuery);
-
-      if (keySnapshot.empty) {
-        setDemoError('Invalid key');
-        setDemoPassword('');
-        shakeInput();
-        setRedeemLoading(false);
-        return;
-      }
-
-      const keyDoc = keySnapshot.docs[0];
-      const keyData = keyDoc.data();
-
-      if (keyData.used) {
-        setDemoError('This key has already been redeemed');
-        setDemoPassword('');
-        shakeInput();
-        setRedeemLoading(false);
-        return;
-      }
-
-      // Mark key as used
-      await updateDoc(keyDoc.ref, {
-        used: true,
-        redeemedBy: user.id,
-        redeemedByName: user.name,
-        redeemedForOrg: user.organizationId,
-        redeemedAt: new Date().toISOString(),
-      });
-
-      // Set grandfathered on the org
-      const orgsQuery = query(collection(db, 'organizations'), where('id', '==', user.organizationId));
-      const orgSnapshot = await getDocs(orgsQuery);
-
-      if (orgSnapshot.empty) {
-        const orgRef = doc(db, 'organizations', user.organizationId);
-        await updateDoc(orgRef, { grandfathered: true });
-      } else {
-        await updateDoc(orgSnapshot.docs[0].ref, { grandfathered: true });
-      }
-
-      await refreshProfile();
-      setShowDemoModal(false);
-      setDemoPassword('');
-      setDemoError('');
-      Alert.alert('Success', 'Key redeemed successfully.');
-    } catch (error: any) {
-      logger.error('Redeem error:', error);
-      setDemoError('Failed to redeem key');
-    } finally {
-      setRedeemLoading(false);
     }
   };
 
@@ -518,6 +447,15 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
                   <Text style={styles.updateOrgButtonText}>Manage Seats</Text>
                 </TouchableOpacity>
               )}
+              {(user?.role === 'admin' || user?.role === 'super_admin') && (
+                <TouchableOpacity
+                  style={styles.updateOrgButton}
+                  onPress={() => navigation.navigate('SubscriptionPlans')}
+                >
+                  <MaterialCommunityIcons name="shield-star" size={20} color={theme.colors.primary} />
+                  <Text style={styles.updateOrgButtonText}>Subscription Plans</Text>
+                </TouchableOpacity>
+              )}
             </View>
           ) : (
             <ActivityIndicator size="small" color={theme.colors.primary} />
@@ -576,13 +514,6 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
                   <Text style={styles.secretMenuButtonText}>Demo Mode</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={styles.secretMenuButton}
-                  onPress={() => { setSecretMode('redeem'); setDemoPassword(''); setDemoError(''); }}
-                >
-                  <MaterialCommunityIcons name="key-variant" size={20} color={theme.colors.primary} />
-                  <Text style={styles.secretMenuButtonText}>Redeem Key</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
                   style={[styles.demoCancelButton, { marginTop: 16 }]}
                   onPress={() => setShowDemoModal(false)}
                 >
@@ -591,9 +522,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
               </>
             ) : (
               <>
-                <Text style={styles.demoModalTitle}>
-                  {secretMode === 'demo' ? 'Enter Access Code' : 'Enter Redemption Key'}
-                </Text>
+                <Text style={styles.demoModalTitle}>Enter Access Code</Text>
                 <TextInput
                   style={styles.demoModalInput}
                   value={demoPassword}
@@ -601,12 +530,12 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
                     setDemoPassword(text);
                     setDemoError('');
                   }}
-                  placeholder={secretMode === 'demo' ? 'Access code' : 'Redemption key'}
+                  placeholder="Access code"
                   placeholderTextColor="#999"
                   secureTextEntry
                   autoCapitalize="none"
                   autoFocus
-                  onSubmitEditing={secretMode === 'demo' ? handleDemoSubmit : handleRedeemSubmit}
+                  onSubmitEditing={handleDemoSubmit}
                 />
                 {demoError !== '' && (
                   <Text style={styles.demoErrorText}>{demoError}</Text>
@@ -618,14 +547,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
                   >
                     <Text style={styles.demoCancelText}>Back</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.demoSubmitButton, redeemLoading && { opacity: 0.5 }]}
-                    onPress={secretMode === 'demo' ? handleDemoSubmit : handleRedeemSubmit}
-                    disabled={redeemLoading}
-                  >
-                    <Text style={styles.demoSubmitText}>
-                      {redeemLoading ? 'Redeeming...' : 'Submit'}
-                    </Text>
+                  <TouchableOpacity style={styles.demoSubmitButton} onPress={handleDemoSubmit}>
+                    <Text style={styles.demoSubmitText}>Submit</Text>
                   </TouchableOpacity>
                 </View>
               </>
