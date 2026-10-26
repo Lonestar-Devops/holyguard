@@ -301,7 +301,7 @@ export const ResourcesScreen: React.FC<ResourcesScreenProps> = ({ navigation }) 
       <View style={styles.nearbyHeader}>
         <Text style={styles.nearbyName} numberOfLines={1}>{place.name}</Text>
         <View style={styles.distanceBadge}>
-          <MaterialCommunityIcons name="map-marker-distance" size={12} color="#fff" />
+          <MaterialCommunityIcons name="map-marker-distance" size={12} color={theme.colors.textPrimary} />
           <Text style={styles.distanceText}>{place.distanceMiles.toFixed(1)} mi</Text>
         </View>
       </View>
@@ -475,7 +475,7 @@ export const ResourcesScreen: React.FC<ResourcesScreenProps> = ({ navigation }) 
         style={styles.fab}
         onPress={() => navigation.navigate('CreateResource')}
       >
-        <MaterialCommunityIcons name="plus" size={28} color="#fff" />
+        <MaterialCommunityIcons name="plus" size={28} color={theme.colors.textPrimary} />
       </TouchableOpacity>
     </SafeAreaView>
   );
@@ -492,7 +492,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     padding: 16,
     borderBottomWidth: 1,
-    borderBottomColor: theme.colors.surfaceDark,
+    borderBottomColor: theme.colors.border,
   },
   headerLeft: {
     flexDirection: 'row',
@@ -519,7 +519,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: theme.colors.surfaceDark,
+    borderColor: theme.colors.border,
     height: 44,
   },
   searchInput: {
@@ -531,7 +531,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 8,
     borderBottomWidth: 1,
-    borderBottomColor: theme.colors.surfaceDark,
+    borderBottomColor: theme.colors.border,
   },
   filterChip: {
     paddingHorizontal: 16,
@@ -540,7 +540,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     backgroundColor: theme.colors.surface,
     borderWidth: 1,
-    borderColor: theme.colors.surfaceDark,
+    borderColor: theme.colors.border,
   },
   filterChipActive: {
     backgroundColor: theme.colors.primary,
@@ -551,7 +551,7 @@ const styles = StyleSheet.create({
     color: theme.colors.textPrimary,
   },
   filterChipTextActive: {
-    color: '#fff',
+    color: theme.colors.textPrimary,
     fontWeight: '600',
   },
   loadingContainer: {
@@ -758,7 +758,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     backgroundColor: theme.colors.surface,
     borderWidth: 1,
-    borderColor: theme.colors.surfaceDark,
+    borderColor: theme.colors.border,
   },
   radiusChipActive: {
     backgroundColor: theme.colors.primary,
@@ -770,7 +770,7 @@ const styles = StyleSheet.create({
     color: theme.colors.textPrimary,
   },
   radiusChipTextActive: {
-    color: '#fff',
+    color: theme.colors.textPrimary,
   },
   nearbyLoading: {
     flexDirection: 'row',
@@ -832,7 +832,7 @@ const styles = StyleSheet.create({
   distanceText: {
     fontSize: 11,
     fontWeight: '600',
-    color: '#fff',
+    color: theme.colors.textPrimary,
     marginLeft: 3,
   },
   nearbyAddress: {

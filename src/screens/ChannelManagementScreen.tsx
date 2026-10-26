@@ -257,7 +257,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     padding: theme.spacing.m,
     borderBottomWidth: 1,
-    borderBottomColor: theme.colors.surfaceDark,
+    borderBottomColor: theme.colors.border,
   },
   backButton: {
     padding: 8,
@@ -276,7 +276,7 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.surface,
     padding: theme.spacing.m,
     borderBottomWidth: 1,
-    borderBottomColor: theme.colors.surfaceDark,
+    borderBottomColor: theme.colors.border,
   },
   createFormTitle: {
     fontSize: 16,
@@ -308,7 +308,7 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.gray,
   },
   createButtonText: {
-    color: theme.colors.white,
+    color: theme.colors.textPrimary,
     fontWeight: 'bold',
     fontSize: 14,
     letterSpacing: 1,

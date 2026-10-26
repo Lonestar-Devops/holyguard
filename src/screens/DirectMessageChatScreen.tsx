@@ -353,7 +353,7 @@ export const DirectMessageChatScreen: React.FC<DirectMessageChatScreenProps> = (
                 <MaterialCommunityIcons
                   name="send"
                   size={24}
-                  color={messageText.trim() && !sending ? theme.colors.white : theme.colors.gray}
+                  color={messageText.trim() && !sending ? theme.colors.textPrimary : theme.colors.gray}
                 />
               </TouchableOpacity>
             </>
@@ -375,7 +375,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     padding: theme.spacing.m,
     borderBottomWidth: 1,
-    borderBottomColor: theme.colors.surfaceDark,
+    borderBottomColor: theme.colors.border,
     backgroundColor: theme.colors.white,
   },
   backButton: {
@@ -445,7 +445,7 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   myMessageText: {
-    color: theme.colors.white,
+    color: theme.colors.textPrimary,
   },
   theirMessageText: {
     color: theme.colors.textPrimary,
@@ -455,7 +455,7 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   myTimestamp: {
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: 'rgba(27, 30, 36, 0.7)',
     textAlign: 'right',
   },
   theirTimestamp: {
@@ -484,7 +484,7 @@ const styles = StyleSheet.create({
     alignItems: 'flex-end',
     padding: theme.spacing.m,
     borderTopWidth: 1,
-    borderTopColor: theme.colors.surfaceDark,
+    borderTopColor: theme.colors.border,
     backgroundColor: theme.colors.white,
   },
   input: {

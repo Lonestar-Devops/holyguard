@@ -287,7 +287,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 16,
     borderBottomWidth: 1,
-    borderBottomColor: theme.colors.surfaceDark,
+    borderBottomColor: theme.colors.border,
   },
   headerTitle: {
     fontSize: 18,
@@ -322,7 +322,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: theme.colors.textPrimary,
     borderWidth: 1,
-    borderColor: theme.colors.surfaceDark,
+    borderColor: theme.colors.border,
   },
   textArea: {
     minHeight: 120,
@@ -343,7 +343,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     backgroundColor: theme.colors.surface,
     borderWidth: 1,
-    borderColor: theme.colors.surfaceDark,
+    borderColor: theme.colors.border,
   },
   categoryChipText: {
     fontSize: 14,
@@ -365,7 +365,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginHorizontal: 8,
     borderWidth: 1,
-    borderColor: theme.colors.surfaceDark,
+    borderColor: theme.colors.border,
   },
   imageButtonText: {
     fontSize: 14,

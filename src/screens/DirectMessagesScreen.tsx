@@ -363,7 +363,7 @@ export const DirectMessagesScreen: React.FC<DirectMessagesScreenProps> = ({ navi
               style={styles.startButton}
               onPress={() => navigation.navigate('UserDirectory')}
             >
-              <MaterialCommunityIcons name="account-search" size={20} color={theme.colors.white} />
+              <MaterialCommunityIcons name="account-search" size={20} color={theme.colors.textPrimary} />
               <Text style={styles.startButtonText}>Find Users</Text>
             </TouchableOpacity>
           </View>
@@ -425,7 +425,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     padding: theme.spacing.m,
     borderBottomWidth: 1,
-    borderBottomColor: theme.colors.surfaceDark,
+    borderBottomColor: theme.colors.border,
   },
   headerTitle: {
     fontSize: 24,
@@ -447,7 +447,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     padding: theme.spacing.m,
     borderBottomWidth: 1,
-    borderBottomColor: theme.colors.surfaceDark,
+    borderBottomColor: theme.colors.border,
     backgroundColor: theme.colors.white,
   },
   avatarContainer: {
@@ -523,14 +523,14 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   startButtonText: {
-    color: theme.colors.white,
+    color: theme.colors.textPrimary,
     fontSize: 16,
     fontWeight: 'bold',
   },
   tabContainer: {
     flexDirection: 'row',
     borderBottomWidth: 1,
-    borderBottomColor: theme.colors.surfaceDark,
+    borderBottomColor: theme.colors.border,
     backgroundColor: theme.colors.white,
   },
   tab: {

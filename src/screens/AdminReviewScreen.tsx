@@ -270,7 +270,7 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         padding: 16,
         borderBottomWidth: 1,
-        borderBottomColor: theme.colors.surfaceDark,
+        borderBottomColor: theme.colors.border,
     },
     headerTitle: {
         fontSize: 20,
@@ -316,7 +316,7 @@ const styles = StyleSheet.create({
         padding: 16,
         marginBottom: 16,
         borderWidth: 1,
-        borderColor: theme.colors.surfaceDark,
+        borderColor: theme.colors.border,
     },
     cardHeader: {
         flexDirection: 'row',
@@ -349,7 +349,7 @@ const styles = StyleSheet.create({
     detailChip: {
         fontSize: 12,
         color: theme.colors.textSecondary,
-        backgroundColor: theme.colors.surface,
+        backgroundColor: theme.colors.background,
         paddingHorizontal: 8,
         paddingVertical: 3,
         borderRadius: 10,
@@ -370,7 +370,7 @@ const styles = StyleSheet.create({
     scoreTrack: {
         flex: 1,
         height: 8,
-        backgroundColor: theme.colors.surface,
+        backgroundColor: theme.colors.background,
         borderRadius: 4,
         overflow: 'hidden',
     },
@@ -390,7 +390,7 @@ const styles = StyleSheet.create({
         justifyContent: 'space-around',
         marginBottom: 12,
         paddingVertical: 8,
-        backgroundColor: theme.colors.surface,
+        backgroundColor: theme.colors.background,
         borderRadius: 8,
     },
     miniCheck: {

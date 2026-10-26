@@ -533,7 +533,7 @@ export const SignUpScreen = ({ navigation }: any) => {
                                 paddingHorizontal: 16,
                                 fontSize: 16,
                                 borderWidth: 1,
-                                borderColor: theme.colors.surfaceDark,
+                                borderColor: theme.colors.border,
                                 color: theme.colors.textPrimary,
                             },
                             listView: {
@@ -749,7 +749,7 @@ const styles = StyleSheet.create({
         padding: 16,
         borderRadius: 8,
         borderWidth: 1,
-        borderColor: theme.colors.surfaceDark,
+        borderColor: theme.colors.border,
         marginBottom: 20,
         fontSize: 16,
         color: theme.colors.textPrimary,
@@ -773,7 +773,7 @@ const styles = StyleSheet.create({
         elevation: 3,
     },
     buttonText: {
-        color: theme.colors.white,
+        color: theme.colors.textPrimary,
         fontWeight: 'bold',
         fontSize: 16,
         letterSpacing: 1,
@@ -793,7 +793,7 @@ const styles = StyleSheet.create({
     toggleOption: {
         backgroundColor: theme.colors.white,
         borderWidth: 2,
-        borderColor: theme.colors.surfaceDark,
+        borderColor: theme.colors.border,
         borderRadius: 8,
         padding: 16,
         marginBottom: 16,
@@ -838,7 +838,7 @@ const styles = StyleSheet.create({
         marginBottom: 10,
         paddingTop: 16,
         borderTopWidth: 1,
-        borderTopColor: theme.colors.surfaceDark,
+        borderTopColor: theme.colors.border,
     },
     sectionTitle: {
         fontSize: 14,
@@ -880,7 +880,7 @@ const styles = StyleSheet.create({
         marginTop: 24,
         width: '100%',
         borderWidth: 1,
-        borderColor: theme.colors.surfaceDark,
+        borderColor: theme.colors.border,
     },
     checksTitle: {
         fontSize: 14,
@@ -905,7 +905,7 @@ const styles = StyleSheet.create({
     },
     scoreDivider: {
         height: 1,
-        backgroundColor: theme.colors.surfaceDark,
+        backgroundColor: theme.colors.border,
         marginVertical: 6,
     },
     verificationNote: {
@@ -927,7 +927,7 @@ const styles = StyleSheet.create({
         height: 24,
         borderRadius: 4,
         borderWidth: 2,
-        borderColor: theme.colors.surfaceDark,
+        borderColor: theme.colors.border,
         alignItems: 'center',
         justifyContent: 'center',
         marginRight: 10,

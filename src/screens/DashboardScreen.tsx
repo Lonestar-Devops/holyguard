@@ -749,7 +749,7 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontSize: 14,
     fontWeight: 'bold',
-    color: theme.colors.surfaceDark,
+    color: theme.colors.textPrimary,
     marginBottom: theme.spacing.s,
     letterSpacing: 1,
   },
@@ -760,7 +760,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: theme.colors.surfaceDark,
+    borderColor: theme.colors.border,
     height: 40,
     marginBottom: theme.spacing.s,
   },
@@ -782,7 +782,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: theme.colors.surfaceDark,
+    borderColor: theme.colors.border,
   },
   dropdownButtonText: {
     fontSize: 14,
@@ -793,7 +793,7 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.white,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: theme.colors.surfaceDark,
+    borderColor: theme.colors.border,
     marginTop: 4,
     overflow: 'hidden',
   },
@@ -804,10 +804,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: theme.colors.surface,
+    borderBottomColor: theme.colors.border,
   },
   dropdownItemActive: {
-    backgroundColor: theme.colors.surface,
+    backgroundColor: theme.colors.background,
   },
   dropdownItemText: {
     fontSize: 14,

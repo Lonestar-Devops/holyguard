@@ -236,7 +236,7 @@ export const CreateWatchlistEntryScreen = ({ navigation, route }: any) => {
             disabled={isSaving || !name.trim()}
           >
             {isSaving ? (
-              <ActivityIndicator color={theme.colors.white} />
+              <ActivityIndicator color={theme.colors.textPrimary} />
             ) : (
               <Text style={styles.saveButtonText}>CREATE ENTRY</Text>
             )}
@@ -300,7 +300,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: theme.colors.textPrimary,
     borderWidth: 1,
-    borderColor: theme.colors.surfaceDark,
+    borderColor: theme.colors.border,
     marginHorizontal: theme.spacing.l,
     marginBottom: theme.spacing.m,
   },
@@ -321,7 +321,7 @@ const styles = StyleSheet.create({
     width: 80,
     height: 80,
     borderRadius: 8,
-    backgroundColor: theme.colors.surfaceDark,
+    backgroundColor: theme.colors.background,
   },
   removePhoto: {
     position: 'absolute',
@@ -359,7 +359,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     backgroundColor: theme.colors.surface,
     borderWidth: 1,
-    borderColor: theme.colors.surfaceDark,
+    borderColor: theme.colors.border,
   },
   statusChipText: {
     fontSize: 14,
@@ -378,7 +378,7 @@ const styles = StyleSheet.create({
     opacity: 0.7,
   },
   saveButtonText: {
-    color: theme.colors.white,
+    color: theme.colors.textPrimary,
     fontSize: 18,
     fontWeight: 'bold',
     letterSpacing: 1,

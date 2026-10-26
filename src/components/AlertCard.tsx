@@ -124,7 +124,7 @@ const styles = StyleSheet.create({
         elevation: 3,
 
         borderLeftWidth: 4,
-        borderLeftColor: theme.colors.surfaceDark,
+        borderLeftColor: theme.colors.border,
     },
     iconContainer: {
         marginRight: theme.spacing.m,

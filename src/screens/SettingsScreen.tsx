@@ -772,7 +772,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     padding: theme.spacing.m,
     borderBottomWidth: 1,
-    borderBottomColor: theme.colors.surfaceDark,
+    borderBottomColor: theme.colors.border,
   },
   backButton: {
     padding: 8,
@@ -818,7 +818,7 @@ const styles = StyleSheet.create({
   },
   roleBadge: {
     backgroundColor: theme.colors.primary,
-    color: theme.colors.white,
+    color: theme.colors.textPrimary,
     paddingHorizontal: 12,
     paddingVertical: 4,
     borderRadius: 12,
@@ -828,7 +828,7 @@ const styles = StyleSheet.create({
   },
   divider: {
     height: 1,
-    backgroundColor: theme.colors.surfaceDark,
+    backgroundColor: theme.colors.border,
   },
   settingsButton: {
     flexDirection: 'row',
@@ -875,7 +875,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: theme.colors.textPrimary,
     borderWidth: 1,
-    borderColor: theme.colors.surfaceDark,
+    borderColor: theme.colors.border,
   },
   updateButton: {
     backgroundColor: theme.colors.primary,
@@ -888,7 +888,7 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.gray,
   },
   updateButtonText: {
-    color: theme.colors.white,
+    color: theme.colors.textPrimary,
     fontWeight: 'bold',
     fontSize: 14,
     letterSpacing: 1,
@@ -1015,7 +1015,7 @@ const styles = StyleSheet.create({
     paddingBottom: 16,
     paddingHorizontal: theme.spacing.m,
     borderBottomWidth: 1,
-    borderBottomColor: theme.colors.surfaceDark,
+    borderBottomColor: theme.colors.border,
     backgroundColor: theme.colors.background,
   },
   modalCloseButton: {
@@ -1052,7 +1052,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: theme.colors.textPrimary,
     borderWidth: 1,
-    borderColor: theme.colors.surfaceDark,
+    borderColor: theme.colors.border,
   },
   selectedAddressContainer: {
     flexDirection: 'row',
@@ -1082,7 +1082,7 @@ const styles = StyleSheet.create({
     opacity: 0.5,
   },
   modalButtonText: {
-    color: theme.colors.white,
+    color: theme.colors.textPrimary,
     fontWeight: 'bold',
     fontSize: 16,
     letterSpacing: 1,
@@ -1157,7 +1157,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   demoSubmitText: {
-    color: '#FFFFFF',
+    color: theme.colors.textPrimary,
     fontWeight: 'bold',
     fontSize: 15,
   },

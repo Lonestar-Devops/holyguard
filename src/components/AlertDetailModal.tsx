@@ -461,7 +461,7 @@ const styles = StyleSheet.create({
     padding: theme.spacing.m,
     backgroundColor: theme.colors.surface,
     borderBottomWidth: 1,
-    borderBottomColor: theme.colors.surfaceDark,
+    borderBottomColor: theme.colors.border,
   },
   headerLeft: {
     flexDirection: 'row',
@@ -503,7 +503,7 @@ const styles = StyleSheet.create({
   },
   image: {
     height: 250,
-    backgroundColor: theme.colors.surfaceDark,
+    backgroundColor: theme.colors.background,
   },
   photoIndicator: {
     flexDirection: 'row',
@@ -639,7 +639,7 @@ const styles = StyleSheet.create({
     marginTop: theme.spacing.m,
     paddingTop: theme.spacing.m,
     borderTopWidth: 1,
-    borderTopColor: theme.colors.surfaceDark,
+    borderTopColor: theme.colors.border,
   },
   descriptionLabel: {
     fontSize: 12,
@@ -661,7 +661,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   dismissButtonText: {
-    color: theme.colors.white,
+    color: theme.colors.textPrimary,
     fontWeight: 'bold',
     fontSize: 16,
     letterSpacing: 1,

@@ -164,7 +164,7 @@ const styles = StyleSheet.create({
         padding: 16,
         marginBottom: 20,
         borderWidth: 1,
-        borderColor: theme.colors.surfaceDark,
+        borderColor: theme.colors.border,
     },
     cardTitle: {
         fontSize: 14,
@@ -205,7 +205,7 @@ const styles = StyleSheet.create({
         height: 24,
         borderRadius: 4,
         borderWidth: 2,
-        borderColor: theme.colors.surfaceDark,
+        borderColor: theme.colors.border,
         alignItems: 'center',
         justifyContent: 'center',
         marginRight: 10,
@@ -240,7 +240,7 @@ const styles = StyleSheet.create({
         opacity: 0.5,
     },
     buttonText: {
-        color: theme.colors.white,
+        color: theme.colors.textPrimary,
         fontWeight: 'bold',
         fontSize: 16,
         letterSpacing: 1,

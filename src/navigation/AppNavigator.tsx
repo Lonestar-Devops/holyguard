@@ -104,7 +104,7 @@ export const AppNavigator = () => {
           headerShown: false,
           tabBarStyle: {
             backgroundColor: theme.colors.surface,
-            borderTopColor: theme.colors.surfaceDark,
+            borderTopColor: theme.colors.border,
             paddingBottom: 5,
             paddingTop: 5,
             height: 60,

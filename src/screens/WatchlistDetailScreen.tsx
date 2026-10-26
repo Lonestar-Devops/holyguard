@@ -379,7 +379,7 @@ export const WatchlistDetailScreen = ({ navigation, route }: any) => {
                 onPress={handleSaveEdit}
                 disabled={isSaving || !editName.trim()}
               >
-                {isSaving ? <ActivityIndicator color="#fff" /> : <Text style={styles.editSaveText}>SAVE CHANGES</Text>}
+                {isSaving ? <ActivityIndicator color={theme.colors.textPrimary} /> : <Text style={styles.editSaveText}>SAVE CHANGES</Text>}
               </TouchableOpacity>
             </ScrollView>
           </View>
@@ -401,7 +401,7 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: 18, fontWeight: '900', color: theme.colors.textPrimary, letterSpacing: 1, flex: 1 },
   headerActions: { flexDirection: 'row', gap: 8 },
   headerButton: { padding: 4 },
-  photo: { width: screenWidth, height: 280, backgroundColor: theme.colors.surfaceDark },
+  photo: { width: screenWidth, height: 280, backgroundColor: theme.colors.background },
   photoIndicator: { flexDirection: 'row', justifyContent: 'center', paddingVertical: 8, gap: 6 },
   dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.gray },
   dotActive: { backgroundColor: theme.colors.primary, width: 20 },
@@ -421,7 +421,7 @@ const styles = StyleSheet.create({
   },
   detailLabel: { fontSize: 11, fontWeight: 'bold', color: theme.colors.textSecondary, letterSpacing: 1, marginBottom: 2 },
   detailValue: { fontSize: 14, color: theme.colors.textPrimary, lineHeight: 20 },
-  metaSection: { marginTop: theme.spacing.m, paddingTop: theme.spacing.m, borderTopWidth: 1, borderTopColor: theme.colors.surfaceDark },
+  metaSection: { marginTop: theme.spacing.m, paddingTop: theme.spacing.m, borderTopWidth: 1, borderTopColor: theme.colors.border },
   metaRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
   metaText: { fontSize: 13, color: theme.colors.textSecondary },
   // Edit Modal
@@ -429,13 +429,13 @@ const styles = StyleSheet.create({
   editModal: { backgroundColor: theme.colors.background, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: theme.spacing.l, maxHeight: '85%' },
   editHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: theme.spacing.m },
   editTitle: { fontSize: 18, fontWeight: '900', color: theme.colors.primary, letterSpacing: 1 },
-  editThumb: { width: 70, height: 70, borderRadius: 8, backgroundColor: theme.colors.surfaceDark, marginRight: 8 },
+  editThumb: { width: 70, height: 70, borderRadius: 8, backgroundColor: theme.colors.background, marginRight: 8 },
   editRemovePhoto: { position: 'absolute', top: -6, right: -2, backgroundColor: theme.colors.white, borderRadius: 10 },
   editAddPhoto: { width: 70, height: 70, borderRadius: 8, borderWidth: 2, borderColor: theme.colors.primary, borderStyle: 'dashed', justifyContent: 'center', alignItems: 'center', backgroundColor: theme.colors.surface },
   editLabel: { fontSize: 13, fontWeight: 'bold', color: theme.colors.textPrimary, marginBottom: 4 },
-  editInput: { backgroundColor: theme.colors.white, borderRadius: 8, padding: 12, fontSize: 15, color: theme.colors.textPrimary, borderWidth: 1, borderColor: theme.colors.surfaceDark, marginBottom: 12 },
-  editStatusChip: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 16, backgroundColor: theme.colors.surface, borderWidth: 1, borderColor: theme.colors.surfaceDark },
+  editInput: { backgroundColor: theme.colors.white, borderRadius: 8, padding: 12, fontSize: 15, color: theme.colors.textPrimary, borderWidth: 1, borderColor: theme.colors.border, marginBottom: 12 },
+  editStatusChip: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 16, backgroundColor: theme.colors.surface, borderWidth: 1, borderColor: theme.colors.border },
   editStatusText: { fontSize: 13, fontWeight: '600', color: theme.colors.textPrimary },
   editSaveButton: { backgroundColor: theme.colors.primary, padding: theme.spacing.m, borderRadius: 8, alignItems: 'center', marginTop: 8, marginBottom: theme.spacing.m },
-  editSaveText: { color: theme.colors.white, fontSize: 16, fontWeight: 'bold', letterSpacing: 1 },
+  editSaveText: { color: theme.colors.textPrimary, fontSize: 16, fontWeight: 'bold', letterSpacing: 1 },
 });

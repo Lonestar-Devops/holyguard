@@ -176,7 +176,7 @@ export default function InviteMembersScreen() {
                 disabled={loading}
             >
                 {loading ? (
-                    <ActivityIndicator color={theme.colors.white} />
+                    <ActivityIndicator color={theme.colors.textPrimary} />
                 ) : (
                     <Text style={styles.generateButtonText}>+ GENERATE NEW CODE</Text>
                 )}
@@ -215,7 +215,7 @@ const styles = StyleSheet.create({
         paddingTop: 60,
         backgroundColor: theme.colors.white,
         borderBottomWidth: 1,
-        borderBottomColor: theme.colors.surfaceDark,
+        borderBottomColor: theme.colors.border,
     },
     title: {
         fontSize: 24,
@@ -241,7 +241,7 @@ const styles = StyleSheet.create({
         elevation: 3,
     },
     generateButtonText: {
-        color: theme.colors.white,
+        color: theme.colors.textPrimary,
         fontWeight: 'bold',
         fontSize: 16,
         letterSpacing: 1,
@@ -266,7 +266,7 @@ const styles = StyleSheet.create({
         padding: 16,
         marginBottom: 12,
         borderWidth: 1,
-        borderColor: theme.colors.surfaceDark,
+        borderColor: theme.colors.border,
     },
     inviteCardInactive: {
         opacity: 0.6,
@@ -319,7 +319,7 @@ const styles = StyleSheet.create({
         alignItems: 'center',
     },
     shareButtonText: {
-        color: theme.colors.white,
+        color: theme.colors.textPrimary,
         fontWeight: 'bold',
         fontSize: 12,
         letterSpacing: 0.5,

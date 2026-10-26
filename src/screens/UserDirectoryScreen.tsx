@@ -255,7 +255,7 @@ export const UserDirectoryScreen: React.FC<UserDirectoryScreenProps> = ({ naviga
               style={styles.messageButton}
               onPress={() => handleOpenChat(item, status.conversationId!)}
             >
-              <MaterialCommunityIcons name="message" size={20} color={theme.colors.white} />
+              <MaterialCommunityIcons name="message" size={20} color={theme.colors.textPrimary} />
               <Text style={styles.messageButtonText}>Message</Text>
             </TouchableOpacity>
           ) : status.hasPendingInvite ? (
@@ -348,7 +348,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     padding: theme.spacing.m,
     borderBottomWidth: 1,
-    borderBottomColor: theme.colors.surfaceDark,
+    borderBottomColor: theme.colors.border,
   },
   backButton: {
     padding: 8,
@@ -371,7 +371,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: theme.spacing.m,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: theme.colors.surfaceDark,
+    borderColor: theme.colors.border,
   },
   searchIcon: {
     marginRight: 8,
@@ -425,7 +425,7 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   roleBadge: {
-    backgroundColor: theme.colors.surface,
+    backgroundColor: theme.colors.background,
     paddingHorizontal: 8,
     paddingVertical: 2,
     borderRadius: 4,
@@ -466,7 +466,7 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   messageButtonText: {
-    color: theme.colors.white,
+    color: theme.colors.textPrimary,
     fontSize: 13,
     fontWeight: '600',
   },

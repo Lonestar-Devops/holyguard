@@ -183,7 +183,7 @@ export const WatchlistScreen = ({ navigation }: any) => {
             >
               <Text style={[
                 styles.filterChipText,
-                isSelected && { color: theme.colors.white },
+                isSelected && { color: status === 'All' ? theme.colors.textPrimary : theme.colors.white },
               ]}>
                 {label}
               </Text>
@@ -262,7 +262,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: theme.colors.surfaceDark,
+    borderColor: theme.colors.border,
     height: 44,
   },
   searchInput: {
@@ -282,7 +282,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     backgroundColor: theme.colors.surface,
     borderWidth: 1,
-    borderColor: theme.colors.surfaceDark,
+    borderColor: theme.colors.border,
   },
   filterChipText: {
     fontSize: 13,
@@ -304,7 +304,7 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 3,
     borderLeftWidth: 4,
-    borderLeftColor: theme.colors.surfaceDark,
+    borderLeftColor: theme.colors.border,
   },
   cardContent: {
     flexDirection: 'row',
@@ -313,16 +313,16 @@ const styles = StyleSheet.create({
     width: 60,
     height: 60,
     borderRadius: 8,
-    backgroundColor: theme.colors.surfaceDark,
+    backgroundColor: theme.colors.background,
     marginRight: 12,
   },
   thumbnailPlaceholder: {
     width: 60,
     height: 60,
     borderRadius: 8,
-    backgroundColor: theme.colors.surface,
+    backgroundColor: theme.colors.background,
     borderWidth: 1,
-    borderColor: theme.colors.surfaceDark,
+    borderColor: theme.colors.border,
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,

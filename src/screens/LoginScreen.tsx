@@ -121,7 +121,7 @@ const styles = StyleSheet.create({
         padding: 16,
         borderRadius: 8,
         borderWidth: 1,
-        borderColor: theme.colors.surfaceDark,
+        borderColor: theme.colors.border,
         marginBottom: 20,
         fontSize: 16,
         color: theme.colors.textPrimary,
@@ -139,7 +139,7 @@ const styles = StyleSheet.create({
         elevation: 3,
     },
     buttonText: {
-        color: theme.colors.white,
+        color: theme.colors.textPrimary,
         fontWeight: 'bold',
         fontSize: 16,
         letterSpacing: 1,

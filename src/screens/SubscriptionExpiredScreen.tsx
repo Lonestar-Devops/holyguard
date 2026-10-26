@@ -9,7 +9,7 @@ export const SubscriptionExpiredScreen = () => {
 
     return (
         <View style={styles.container}>
-            <MaterialCommunityIcons name="shield-off-outline" size={64} color={theme.colors.surfaceDark} />
+            <MaterialCommunityIcons name="shield-off-outline" size={64} color={theme.colors.textSecondary} />
 
             <Text style={styles.title}>SUBSCRIPTION EXPIRED</Text>
 
@@ -68,7 +68,7 @@ const styles = StyleSheet.create({
         paddingVertical: 12,
         borderRadius: 8,
         borderWidth: 1,
-        borderColor: theme.colors.surfaceDark,
+        borderColor: theme.colors.border,
         marginBottom: 24,
     },
     orgName: {

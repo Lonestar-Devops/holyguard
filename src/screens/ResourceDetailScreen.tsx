@@ -210,7 +210,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 16,
     borderBottomWidth: 1,
-    borderBottomColor: theme.colors.surfaceDark,
+    borderBottomColor: theme.colors.border,
   },
   headerTitle: {
     fontSize: 18,
@@ -268,7 +268,7 @@ const styles = StyleSheet.create({
   },
   divider: {
     height: 1,
-    backgroundColor: theme.colors.surfaceDark,
+    backgroundColor: theme.colors.border,
     marginVertical: 20,
   },
   descriptionTitle: {

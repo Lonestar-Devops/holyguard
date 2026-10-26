@@ -51,7 +51,7 @@ export const RejectedScreen = () => {
             </Text>
 
             <TouchableOpacity style={styles.contactButton} onPress={handleContactSupport}>
-                <MaterialCommunityIcons name="email-outline" size={20} color={theme.colors.white} style={{ marginRight: 8 }} />
+                <MaterialCommunityIcons name="email-outline" size={20} color={theme.colors.textPrimary} style={{ marginRight: 8 }} />
                 <Text style={styles.contactButtonText}>CONTACT SUPPORT</Text>
             </TouchableOpacity>
 
@@ -130,7 +130,7 @@ const styles = StyleSheet.create({
         elevation: 3,
     },
     contactButtonText: {
-        color: theme.colors.white,
+        color: theme.colors.textPrimary,
         fontWeight: 'bold',
         fontSize: 16,
         letterSpacing: 1,

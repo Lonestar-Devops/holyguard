@@ -341,7 +341,7 @@ export const MapScreen = () => {
                     <MaterialCommunityIcons
                       name={isMyOrg ? 'church' : 'shield-check'}
                       size={isMyOrg ? 22 : 18}
-                      color="#FFF"
+                      color={isMyOrg ? theme.colors.textPrimary : '#FFF'}
                     />
                   </TouchableOpacity>
                 </MarkerView>
@@ -379,7 +379,7 @@ export const MapScreen = () => {
               <View style={styles.orgCalloutBubble}>
                 {user?.organizationId === selectedOrg.orgId && (
                   <View style={styles.myOrgBadge}>
-                    <MaterialCommunityIcons name="star" size={12} color="#FFF" />
+                    <MaterialCommunityIcons name="star" size={12} color={theme.colors.textPrimary} />
                     <Text style={styles.myOrgBadgeText}>YOUR ORGANIZATION</Text>
                   </View>
                 )}
@@ -829,7 +829,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
   },
   myOrgBadgeText: {
-    color: '#FFF',
+    color: theme.colors.textPrimary,
     fontSize: 10,
     fontWeight: 'bold',
     marginLeft: 4,

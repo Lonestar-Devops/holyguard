@@ -246,7 +246,7 @@ export const TeamScreen = ({ navigation, route }: any) => {
                 style={[styles.logoutButton, { backgroundColor: theme.colors.primary, marginBottom: 12 }]}
                 onPress={() => navigation.navigate('ChannelManagement', { currentChannelId: null })}
               >
-                <Text style={styles.logoutText}>CREATE CHANNEL</Text>
+                <Text style={[styles.logoutText, { color: theme.colors.textPrimary }]}>CREATE CHANNEL</Text>
               </TouchableOpacity>
             </>
           ) : (
@@ -286,7 +286,7 @@ export const TeamScreen = ({ navigation, route }: any) => {
                 style={styles.inviteButton}
                 onPress={() => navigation.navigate('InviteMembers')}
               >
-                <MaterialCommunityIcons name="account-plus" size={20} color={theme.colors.white} />
+                <MaterialCommunityIcons name="account-plus" size={20} color={theme.colors.textPrimary} />
                 <Text style={styles.inviteButtonText}>INVITE</Text>
               </TouchableOpacity>
             )}
@@ -393,7 +393,7 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   inviteButtonText: {
-    color: theme.colors.white,
+    color: theme.colors.textPrimary,
     fontWeight: 'bold',
     fontSize: 12,
     letterSpacing: 0.5,
@@ -405,7 +405,7 @@ const styles = StyleSheet.create({
     borderRadius: 4,
   },
   headerBadgeText: {
-    color: theme.colors.white,
+    color: theme.colors.textPrimary,
     fontWeight: 'bold',
     fontSize: 12,
     letterSpacing: 1,
@@ -480,7 +480,7 @@ const styles = StyleSheet.create({
     padding: theme.spacing.m,
     backgroundColor: theme.colors.surface,
     borderTopWidth: 1,
-    borderTopColor: theme.colors.surfaceDark,
+    borderTopColor: theme.colors.border,
   },
   input: {
     flex: 1,
@@ -503,7 +503,7 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.gray,
   },
   sendButtonText: {
-    color: theme.colors.white,
+    color: theme.colors.textPrimary,
     fontWeight: 'bold',
     fontSize: 12,
     letterSpacing: 1,

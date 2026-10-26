@@ -221,7 +221,7 @@ export const IncidentReportModal: React.FC<IncidentReportModalProps> = ({
                         >
                             <View style={[styles.checkbox, addToWatchlist && styles.checkboxChecked]}>
                                 {addToWatchlist && (
-                                    <MaterialCommunityIcons name="check" size={18} color={theme.colors.white} />
+                                    <MaterialCommunityIcons name="check" size={18} color={theme.colors.textPrimary} />
                                 )}
                             </View>
                             <View style={styles.watchlistTextContainer}>
@@ -299,7 +299,7 @@ const styles = StyleSheet.create({
         width: 100,
         height: 100,
         borderRadius: 8,
-        backgroundColor: theme.colors.surfaceDark,
+        backgroundColor: theme.colors.background,
     },
     removePhotoButton: {
         position: 'absolute',
@@ -373,7 +373,7 @@ const styles = StyleSheet.create({
         backgroundColor: theme.colors.surface,
         marginRight: 8,
         borderWidth: 1,
-        borderColor: theme.colors.surfaceDark,
+        borderColor: theme.colors.border,
     },
     categoryChipText: {
         fontSize: 13,
@@ -389,7 +389,7 @@ const styles = StyleSheet.create({
         textAlignVertical: 'top',
         minHeight: 80,
         borderWidth: 1,
-        borderColor: theme.colors.surfaceDark,
+        borderColor: theme.colors.border,
         marginBottom: theme.spacing.m,
     },
     submitButton: {
@@ -420,7 +420,7 @@ const styles = StyleSheet.create({
         borderRadius: 8,
         marginBottom: theme.spacing.m,
         borderWidth: 1,
-        borderColor: theme.colors.surfaceDark,
+        borderColor: theme.colors.border,
     },
     checkbox: {
         width: 24,
@@ -466,7 +466,7 @@ const styles = StyleSheet.create({
         fontSize: 16,
         color: theme.colors.textPrimary,
         borderWidth: 1,
-        borderColor: theme.colors.surfaceDark,
+        borderColor: theme.colors.border,
         marginBottom: theme.spacing.m,
     },
 });

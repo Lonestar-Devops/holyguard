@@ -213,12 +213,12 @@ const styles = StyleSheet.create({
         padding: 16,
         borderRadius: 12,
         borderWidth: 1,
-        borderColor: theme.colors.surfaceDark,
+        borderColor: theme.colors.border,
         marginBottom: 16,
     },
     seatBarBackground: {
         height: 8,
-        backgroundColor: theme.colors.surfaceDark,
+        backgroundColor: theme.colors.background,
         borderRadius: 4,
         overflow: 'hidden',
         marginBottom: 8,
@@ -256,7 +256,7 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'space-between',
         borderWidth: 1,
-        borderColor: theme.colors.surfaceDark,
+        borderColor: theme.colors.border,
     },
     memberInfo: {
         flexDirection: 'row',

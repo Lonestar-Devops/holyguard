@@ -437,7 +437,7 @@ const styles = StyleSheet.create({
         padding: 16,
         width: '100%',
         borderWidth: 1,
-        borderColor: theme.colors.surfaceDark,
+        borderColor: theme.colors.border,
         marginBottom: 16,
     },
     checksTitle: {
@@ -469,14 +469,14 @@ const styles = StyleSheet.create({
         borderRadius: 12,
     },
     verifyNowText: {
-        color: theme.colors.white,
+        color: theme.colors.textPrimary,
         fontSize: 11,
         fontWeight: 'bold',
         letterSpacing: 0.5,
     },
     scoreDivider: {
         height: 1,
-        backgroundColor: theme.colors.surfaceDark,
+        backgroundColor: theme.colors.border,
         marginVertical: 6,
     },
     thresholdNote: {
@@ -511,7 +511,7 @@ const styles = StyleSheet.create({
         padding: 14,
         borderRadius: 8,
         borderWidth: 1,
-        borderColor: theme.colors.surfaceDark,
+        borderColor: theme.colors.border,
         fontSize: 16,
         color: theme.colors.textPrimary,
         marginBottom: 12,
@@ -523,7 +523,7 @@ const styles = StyleSheet.create({
         alignItems: 'center',
     },
     inlineButtonText: {
-        color: theme.colors.white,
+        color: theme.colors.textPrimary,
         fontWeight: 'bold',
         fontSize: 14,
         letterSpacing: 0.5,

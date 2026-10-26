@@ -203,7 +203,7 @@ export const PaywallScreen = () => {
                 disabled={loading}
             >
                 {loading ? (
-                    <ActivityIndicator color={theme.colors.white} />
+                    <ActivityIndicator color={theme.colors.textPrimary} />
                 ) : (
                     <Text style={styles.subscribeButtonText}>SUBSCRIBE NOW</Text>
                 )}
@@ -262,12 +262,12 @@ const styles = StyleSheet.create({
         borderRadius: 12,
         padding: 16,
         borderWidth: 2,
-        borderColor: theme.colors.surfaceDark,
+        borderColor: theme.colors.border,
         position: 'relative',
     },
     planCardSelected: {
         borderColor: theme.colors.primary,
-        backgroundColor: '#FDF8F4',
+        backgroundColor: theme.colors.background,
     },
     planCardPopular: {
         borderColor: theme.colors.accent,
@@ -334,7 +334,7 @@ const styles = StyleSheet.create({
         height: 20,
         borderRadius: 10,
         borderWidth: 2,
-        borderColor: theme.colors.surfaceDark,
+        borderColor: theme.colors.border,
         alignItems: 'center',
         justifyContent: 'center',
     },
@@ -362,7 +362,7 @@ const styles = StyleSheet.create({
         opacity: 0.5,
     },
     subscribeButtonText: {
-        color: theme.colors.white,
+        color: theme.colors.textPrimary,
         fontWeight: '900',
         fontSize: 16,
         letterSpacing: 1,

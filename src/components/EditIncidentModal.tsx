@@ -243,7 +243,7 @@ export const EditIncidentModal: React.FC<EditIncidentModalProps> = ({
                             disabled={isSaving || description.trim().length === 0}
                         >
                             {isSaving ? (
-                                <ActivityIndicator color={theme.colors.white} />
+                                <ActivityIndicator color={theme.colors.textPrimary} />
                             ) : (
                                 <Text style={styles.saveButtonText}>SAVE CHANGES</Text>
                             )}
@@ -296,7 +296,7 @@ const styles = StyleSheet.create({
         width: 100,
         height: 100,
         borderRadius: 8,
-        backgroundColor: theme.colors.surfaceDark,
+        backgroundColor: theme.colors.background,
     },
     newBadge: {
         position: 'absolute',
@@ -359,7 +359,7 @@ const styles = StyleSheet.create({
         backgroundColor: theme.colors.surface,
         marginRight: 8,
         borderWidth: 1,
-        borderColor: theme.colors.surfaceDark,
+        borderColor: theme.colors.border,
     },
     categoryChipText: {
         fontSize: 13,
@@ -375,7 +375,7 @@ const styles = StyleSheet.create({
         textAlignVertical: 'top',
         minHeight: 100,
         borderWidth: 1,
-        borderColor: theme.colors.surfaceDark,
+        borderColor: theme.colors.border,
         marginBottom: theme.spacing.l,
     },
     saveButton: {
@@ -389,7 +389,7 @@ const styles = StyleSheet.create({
         opacity: 0.7,
     },
     saveButtonText: {
-        color: theme.colors.white,
+        color: theme.colors.textPrimary,
         fontSize: 18,
         fontWeight: 'bold',
         letterSpacing: 1,
@@ -401,7 +401,7 @@ const styles = StyleSheet.create({
         fontSize: 16,
         color: theme.colors.textPrimary,
         borderWidth: 1,
-        borderColor: theme.colors.surfaceDark,
+        borderColor: theme.colors.border,
         marginBottom: theme.spacing.l,
     },
 });
