@@ -109,6 +109,7 @@ export const DashboardScreen = ({ navigation }: any) => {
           title: data.title || 'Incident',
           timestamp: timeAgo,
           location: data.location || 'Unknown',
+          organizationId: data.organizationId,
           type: data.type || 'alert',
           category: data.category,
           imageUrl: data.imageUrl,
@@ -466,9 +467,6 @@ export const DashboardScreen = ({ navigation }: any) => {
       <View style={styles.headerContainer}>
         <View style={styles.headerLeft}>
             <Text style={styles.appName}>HOLYGUARD</Text>
-            <Text style={styles.networkStatus}>
-                NETWORK: <Text style={styles.onlineStatus}>ONLINE</Text>
-            </Text>
             <View style={styles.headerSponsorRow}>
               <Image source={require('../../assets/cowboystate.png')} style={styles.headerSponsorLogo} resizeMode="contain" />
             </View>
@@ -674,15 +672,6 @@ const styles = StyleSheet.create({
   headerSponsorLogo: {
     width: 50,
     height: 25,
-  },
-  networkStatus: {
-    fontSize: 12,
-    fontWeight: 'bold',
-    color: theme.colors.textSecondary,
-    marginTop: 2,
-  },
-  onlineStatus: {
-    color: theme.colors.success,
   },
   headerRight: {
     flexDirection: 'row',

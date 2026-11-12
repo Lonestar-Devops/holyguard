@@ -6,7 +6,8 @@
  *   library (fetchProducts, purchaseUpdatedListener, purchaseErrorListener, ...)
  *   before initConnection() resolves raises a native exception that JS cannot
  *   catch; App Review hit that crash in an earlier build.
- * - initIAP() is memoized: every caller gets the same promise.
+ * - initIAP() is shared: callers get the attempt in flight, or the one that connected.
+ *   A failed attempt is not kept, so a later call (the paywall's Retry) can recover.
  * - Never call endConnection(). teardownIAP() is a deliberate no-op.
  *
  * Purchases complete through purchaseUpdatedListener, not the requestPurchase
@@ -72,6 +73,61 @@ export const PLAN_CONFIG = {
 
 export type PlanKey = keyof typeof PLAN_CONFIG;
 
+// PLAN_CONFIG.price is the US price as configured in App Store Connect, kept for
+// reference only. Screens show the App Store's own price (product.displayPrice), which
+// follows the storefront's currency and any repricing.
+
+// Every plan is a 1-month auto-renewable subscription in App Store Connect. Used only when
+// StoreKit doesn't report the period.
+const CONFIGURED_PERIOD = { unit: 'month', value: 1 } as const;
+
+const PERIOD_UNITS = ['day', 'week', 'month', 'year'] as const;
+type PeriodUnit = (typeof PERIOD_UNITS)[number];
+
+/** The plan's billing period as StoreKit reports it, or the configured 1 month. */
+export const billingPeriodOf = (
+  product?: ProductSubscription | null,
+): { unit: PeriodUnit; value: number } => {
+  const ios = product && product.platform === 'ios' ? product : null;
+  const unit = ios?.subscriptionPeriodUnitIOS;
+  const value = Number(ios?.subscriptionPeriodNumberIOS ?? '');
+  if (unit && (PERIOD_UNITS as readonly string[]).includes(unit) && Number.isInteger(value) && value > 0) {
+    return { unit: unit as PeriodUnit, value };
+  }
+  return { ...CONFIGURED_PERIOD };
+};
+
+/** 'month', '3 months', 'year' ... for "$9.99 / month" and "per month". */
+export const billingPeriodLabel = (product?: ProductSubscription | null): string => {
+  const { unit, value } = billingPeriodOf(product);
+  return value === 1 ? unit : `${value} ${unit}s`;
+};
+
+/** True when the plan renews every month (the configured period). */
+export const isMonthlyPlan = (product?: ProductSubscription | null): boolean => {
+  const { unit, value } = billingPeriodOf(product);
+  return unit === 'month' && value === 1;
+};
+
+/**
+ * The App Store price divided across the plan's seats, formatted in the storefront's
+ * currency, e.g. '$3.33'. null when StoreKit gave no numeric price or the currency can't
+ * be formatted, so the caller can leave the line out rather than guess.
+ */
+export const pricePerSeat = (product: ProductSubscription | null | undefined, seats: number): string | null => {
+  const price = product?.price;
+  const currency = product?.currency;
+  if (typeof price !== 'number' || !Number.isFinite(price) || price <= 0 || !currency || seats < 1) {
+    return null;
+  }
+  try {
+    return new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(price / seats);
+  } catch (error) {
+    logger.warn('pricePerSeat format failed:', error);
+    return null;
+  }
+};
+
 export const planFromProductId = (productId: string): PlanKey | null => {
   if (productId === PRODUCT_IDS.INDIVIDUAL) return 'individual';
   if (productId === PRODUCT_IDS.TEAM) return 'team';
@@ -79,25 +135,62 @@ export const planFromProductId = (productId: string): PlanKey | null => {
   return null;
 };
 
-// Shared by every caller. Cleared only when initConnection() throws, so the next
-// call retries; a resolved result is kept for the rest of the session.
+// The attempt in flight, or the one that connected. Every caller shares it, so two
+// initConnection() calls never run at the same time. A failed attempt is dropped once it
+// settles, so the next initIAP() call (the paywall's Retry) tries again. In 15.6.2 the
+// native initConnection() reports failure by resolving false, not by throwing, so both
+// outcomes count as failure here.
 let initPromise: Promise<boolean> | null = null;
+let attemptedInit = false;
+let connected = false;
+// Run once, right after the first attempt that connects (see attachWhenReady).
+const onConnected = new Set<() => void>();
 
-/** Start the StoreKit connection once. Never rejects: resolves false on failure. */
+const connectOnce = async (): Promise<boolean> => {
+  try {
+    const ok = (await initConnection()) === true;
+    if (ok) {
+      logger.log('IAP connection initialized');
+    } else {
+      logger.warn('IAP connection unavailable; the next initIAP() call retries');
+    }
+    return ok;
+  } catch (error) {
+    logger.error('IAP init error:', error);
+    return false;
+  }
+};
+
+/**
+ * Start the StoreKit connection. Never rejects: resolves false on failure.
+ * Once it has connected, every later call returns the same resolved promise. After a
+ * failure the next call starts a fresh attempt; calls made while one is in flight share it.
+ */
 export const initIAP = (): Promise<boolean> => {
   if (initPromise) return initPromise;
-  initPromise = (async () => {
-    try {
-      const connected = await initConnection();
-      logger.log('IAP connection initialized');
-      return !!connected;
-    } catch (error) {
-      logger.error('IAP init error:', error);
-      initPromise = null;
-      return false;
+  attemptedInit = true;
+  const attempt = connectOnce();
+  initPromise = attempt;
+  // Registered before any caller can await `attempt`, so it runs first: by the time a
+  // caller sees the result, a failed attempt is already cleared and listeners waiting for
+  // the connection are already attached.
+  attempt.then((ok) => {
+    if (!ok) {
+      if (initPromise === attempt) initPromise = null;
+      return;
     }
-  })();
-  return initPromise;
+    connected = true;
+    const callbacks = Array.from(onConnected);
+    onConnected.clear();
+    for (const callback of callbacks) {
+      try {
+        callback();
+      } catch (error) {
+        logger.error('IAP onConnected callback failed:', error);
+      }
+    }
+  });
+  return attempt;
 };
 
 /**
@@ -178,27 +271,36 @@ export const isDeferredPaymentError = (error: unknown): boolean => {
   return code === ErrorCode.DeferredPayment || code === ErrorCode.Pending;
 };
 
-// Returns a handle at once, but attaches the native listener only after initIAP()
-// resolves true, and never after remove() was called.
+// Returns a handle at once, but attaches the native listener only once an initIAP()
+// attempt has connected, and never after remove() was called. If the first attempt
+// failed, the listener stays waiting and attaches when a later attempt (Retry) connects.
 const attachWhenReady = (
   attach: () => EventSubscription,
   label: string,
 ): EventSubscription => {
   let sub: EventSubscription | null = null;
   let cancelled = false;
-  initIAP()
-    .then((ready) => {
-      if (cancelled || !ready) return;
-      try {
-        sub = attach();
-      } catch (error) {
-        logger.error(`${label} attach failed:`, error);
-      }
-    })
-    .catch((error) => logger.error(`${label} init failed:`, error));
+  const tryAttach = () => {
+    if (cancelled || sub) return;
+    try {
+      sub = attach();
+    } catch (error) {
+      logger.error(`${label} attach failed:`, error);
+    }
+  };
+  if (connected) {
+    tryAttach();
+  } else {
+    onConnected.add(tryAttach);
+    // Start the connection if nothing has tried yet. After a failed attempt, retrying is
+    // left to the caller (App.tsx at launch, the paywall's Retry), so attaching a listener
+    // never fires an extra attempt on its own.
+    if (!attemptedInit) initIAP();
+  }
   return {
     remove: () => {
       cancelled = true;
+      onConnected.delete(tryAttach);
       try {
         sub?.remove();
       } catch (error) {

@@ -26,28 +26,76 @@ import {
     isDeferredPaymentError,
     addPurchaseUpdateListener,
     addPurchaseErrorListener,
+    billingPeriodLabel,
+    isMonthlyPlan,
+    pricePerSeat,
     type PlanKey,
 } from '../config/iap';
+import {
+    FUNCTIONS_BASE_URL,
+    MANAGE_SUBSCRIPTIONS_URL,
+    PRIVACY_URL,
+    SUPPORT_EMAIL,
+    TERMS_URL,
+} from '../constants/links';
+import { AccountActions } from '../components/AccountActions';
 import { logger } from '../utils/logger';
 
-const VALIDATE_RECEIPT_URL = 'https://us-central1-holyguard-app.cloudfunctions.net/validateAppleReceipt';
-const MANAGE_SUBSCRIPTIONS_URL = 'https://apps.apple.com/account/subscriptions';
-const TERMS_URL = 'https://atmksheldon.github.io/holyguard/terms.html';
-const PRIVACY_URL = 'https://atmksheldon.github.io/holyguard/privacy.html';
+const VALIDATE_RECEIPT_URL = `${FUNCTIONS_BASE_URL}/validateAppleReceipt`;
+
+const PLAN_ORDER: PlanKey[] = ['individual', 'team', 'enterprise'];
 
 const isOurProduct = (productId: string) => Object.values(PRODUCT_IDS).includes(productId);
+
+// Open a link; if no app can open it, show the address instead.
+const openLink = async (url: string, title: string) => {
+    try {
+        await Linking.openURL(url);
+    } catch (error) {
+        logger.warn(`Open ${title} failed:`, error);
+        Alert.alert(title, url);
+    }
+};
+
+// The auto-renewal disclosure (Guideline 3.1.2), with each plan's price and period taken
+// from the App Store so it always matches what StoreKit charges in this storefront.
+const buildDisclaimer = (subs: Record<string, ProductSubscription>): string => {
+    const loaded = PLAN_ORDER.map((key) => ({ key, product: subs[PLAN_CONFIG[key].productId] })).filter(
+        (entry): entry is { key: PlanKey; product: ProductSubscription } => !!entry.product?.displayPrice
+    );
+    const renewal = loaded.every((entry) => isMonthlyPlan(entry.product))
+        ? 'Each plan renews monthly'
+        : 'Each plan renews at the end of its billing period';
+    const prices = loaded.length
+        ? ` at the price shown above (${loaded
+              .map((entry) => `${PLAN_CONFIG[entry.key].name} ${entry.product.displayPrice}/${billingPeriodLabel(entry.product)}`)
+              .join(', ')})`
+        : ' at the price the App Store shows before you confirm the purchase';
+    return (
+        `HolyGuard subscriptions are auto-renewable. ${renewal}${prices} and provides the listed seats and features ` +
+        'for the subscription period. Payment is charged to your Apple ID at confirmation of purchase. Subscriptions ' +
+        'automatically renew unless cancelled at least 24 hours before the end of the current period. You can manage ' +
+        'and cancel your subscription anytime in your Apple ID account settings.'
+    );
+};
 
 // What to tell the admin when validateAppleReceipt (functions/index.js) rejects a purchase
 // for a reason that retrying cannot fix. undefined: the failure was temporary (network, 5xx).
 const permanentRejectionMessage = (status: number, error: unknown): string | undefined => {
     if (status === 403) return 'Only an organization admin can activate a subscription.';
-    if (status === 404) return "Your account isn't linked to an organization. Please contact support.";
+    if (status === 404) return `Your account isn't linked to an organization. Please contact support at ${SUPPORT_EMAIL}.`;
+    if (status === 409) {
+        return typeof error === 'string' && error
+            ? error
+            : `This organization already has an active App Store subscription from another Apple ID. Contact support at ${SUPPORT_EMAIL} if you need to change who pays.`;
+    }
     if (status !== 200 || typeof error !== 'string') return undefined;
     if (error.includes('already linked')) {
-        return "This Apple ID's HolyGuard subscription is already linked to another organization. Use the Apple ID that pays for this organization, or contact support.";
+        return `This Apple ID's HolyGuard subscription is already linked to another organization. Use the Apple ID that pays for this organization, or contact support at ${SUPPORT_EMAIL}.`;
     }
     if (error === 'Subscription expired') return 'This subscription has expired. Choose a plan to subscribe again.';
-    return 'The App Store purchase could not be verified for HolyGuard. Please contact support.';
+    if (error === 'Subscription revoked') return 'Apple refunded or revoked this purchase. Choose a plan to subscribe again.';
+    return `The App Store purchase could not be verified for HolyGuard. Please contact support at ${SUPPORT_EMAIL}.`;
 };
 
 interface PlanCardProps {
@@ -61,8 +109,12 @@ interface PlanCardProps {
 const PlanCard: React.FC<PlanCardProps> = ({ planKey, selected, onSelect, storeSub, popular }) => {
     const config = PLAN_CONFIG[planKey];
     const seats: number = config.seats;
-    // App Store price once StoreKit has loaded the plan, otherwise the configured price.
-    const displayPrice = storeSub?.displayPrice || config.price;
+    // Price and period come from the App Store. A plan StoreKit did not return can't be
+    // bought, so it shows no price rather than a guessed one.
+    const displayPrice = storeSub?.displayPrice || null;
+    const period = billingPeriodLabel(storeSub);
+    const monthly = isMonthlyPlan(storeSub);
+    const perSeat = displayPrice && seats > 1 ? pricePerSeat(storeSub, seats) : null;
 
     return (
         <TouchableOpacity
@@ -77,10 +129,27 @@ const PlanCard: React.FC<PlanCardProps> = ({ planKey, selected, onSelect, storeS
             )}
             <View style={styles.planHeader}>
                 <Text style={[styles.planName, selected && styles.planNameSelected]}>{config.name}</Text>
-                <Text style={[styles.planPrice, selected && styles.planPriceSelected]}>{displayPrice}</Text>
+                {displayPrice ? (
+                    <Text style={[styles.planPrice, selected && styles.planPriceSelected]}>
+                        {displayPrice}
+                        <Text style={styles.planPeriod}> / {period}</Text>
+                    </Text>
+                ) : (
+                    <Text style={styles.planUnavailable}>Not available</Text>
+                )}
             </View>
             <Text style={styles.planDescription}>{config.description}</Text>
             <View style={styles.planFeatures}>
+                {displayPrice && (
+                    <View style={styles.featureRow}>
+                        <MaterialCommunityIcons name="calendar-sync" size={16} color={selected ? theme.colors.primary : theme.colors.textSecondary} />
+                        <Text style={styles.featureText}>
+                            {monthly
+                                ? 'Monthly subscription, renews automatically'
+                                : `Renews automatically every ${period}`}
+                        </Text>
+                    </View>
+                )}
                 <View style={styles.featureRow}>
                     <MaterialCommunityIcons name="account-group" size={16} color={selected ? theme.colors.primary : theme.colors.textSecondary} />
                     <Text style={styles.featureText}>{seats === 1 ? '1 seat' : `Up to ${seats} seats`}</Text>
@@ -93,11 +162,11 @@ const PlanCard: React.FC<PlanCardProps> = ({ planKey, selected, onSelect, storeS
                     <MaterialCommunityIcons name="map-marker-radius" size={16} color={selected ? theme.colors.primary : theme.colors.textSecondary} />
                     <Text style={styles.featureText}>Network map access</Text>
                 </View>
-                {seats > 1 && (
+                {perSeat && (
                     <View style={styles.featureRow}>
                         <MaterialCommunityIcons name="cash" size={16} color={selected ? theme.colors.primary : theme.colors.textSecondary} />
                         <Text style={styles.featureText}>
-                            ${(parseFloat(config.price.replace(/[^0-9.]/g, '')) / seats).toFixed(2)}/seat/mo
+                            {monthly ? `${perSeat}/seat/mo` : `${perSeat} per seat every ${period}`}
                         </Text>
                     </View>
                 )}
@@ -124,17 +193,22 @@ export const PaywallScreen = () => {
     const purchaseInFlight = useRef(false);
     // Transaction ids being validated now. StoreKit can deliver the same one twice.
     const validatingIds = useRef(new Set<string>());
+    // Set once validateActivePurchase has run against a live StoreKit connection.
+    const activePurchaseChecked = useRef(false);
 
-    // For an unpaid org the purchase listeners attach once, after the StoreKit connection is
-    // up. They keep this first render's handlers, which only use state setters, refs, auth and
+    // For an unpaid org the purchase listeners are registered once. They attach as soon as the
+    // StoreKit connection is up: now, or after a later Retry connects (src/config/iap.ts). They
+    // keep this first render's handlers, which only use state setters, refs, auth and
     // refreshProfile. An active org (Settings → Subscription Plans) only sees the plans: nothing
-    // is bought here, and validating a renewal from here would give a grandfathered org a plan
-    // and seat cap, because validateAppleReceipt writes them unconditionally.
+    // is bought here. validateAppleReceipt leaves a grandfathered org's plan and seats alone
+    // (it records only the Apple link), but there is still nothing to activate for an org that
+    // is already active, so no purchase is validated from here.
     useEffect(() => {
         let cancelled = false;
         (async () => {
+            let ready = false;
             try {
-                await initIAP();
+                ready = await initIAP();
             } catch (error) {
                 logger.error('PaywallScreen init wait failed:', error);
             }
@@ -146,9 +220,13 @@ export const PaywallScreen = () => {
                 } catch (error) {
                     logger.error('PaywallScreen listener attach failed:', error);
                 }
-                validateActivePurchase();
+                if (ready) validateActivePurchase();
             }
-            loadProducts();
+            // If the connection failed, this makes one fresh attempt (initIAP() does not keep
+            // a failed one); after that, Retry tries again.
+            const loaded = await loadProducts();
+            if (cancelled) return;
+            if (!isActive && loaded) validateActivePurchase();
         })();
         return () => {
             cancelled = true;
@@ -166,7 +244,9 @@ export const PaywallScreen = () => {
         };
     }, []);
 
-    const loadProducts = async () => {
+    // Loads the plans from the App Store. fetchSubscriptionProducts waits for initIAP(), which
+    // starts a fresh connection attempt if the last one failed. Resolves true when plans loaded.
+    const loadProducts = async (): Promise<boolean> => {
         setLoadingProducts(true);
         setProductsUnavailable(false);
         try {
@@ -174,20 +254,30 @@ export const PaywallScreen = () => {
             if (!products.length) {
                 setProductsUnavailable(true);
                 setSubs({});
-                return;
+                return false;
             }
             const productMap: Record<string, ProductSubscription> = {};
             for (const product of products) {
                 productMap[product.id] = product;
             }
             setSubs(productMap);
+            return true;
         } catch (error) {
             logger.error('Load products error:', error);
             setProductsUnavailable(true);
             setSubs({});
+            return false;
         } finally {
             setLoadingProducts(false);
         }
+    };
+
+    // "Plans unavailable" → Retry. Reconnects to the App Store if needed; once it is connected
+    // the purchase listeners attach by themselves, and an unpaid org gets the entitlement check
+    // it missed on open.
+    const handleRetry = async () => {
+        const loaded = await loadProducts();
+        if (loaded && !isActive) validateActivePurchase();
     };
 
     // purchaseUpdatedListener callback: every completed purchase lands here, possibly twice
@@ -289,8 +379,13 @@ export const PaywallScreen = () => {
     // listens, so a paid purchase whose validation never completed (network error, app closed
     // mid-check, Ask to Buy approved later) is not retried by itself. On open, quietly
     // validate this Apple ID's active plan; a failure stays silent (Restore reports it).
+    // Runs once per screen, and only against a live connection (without one,
+    // fetchAvailablePurchases would just report nothing).
     const validateActivePurchase = async () => {
         try {
+            if (!(await initIAP())) return;
+            if (activePurchaseChecked.current) return;
+            activePurchaseChecked.current = true;
             const ours = (await fetchAvailablePurchases()).filter((p) => isOurProduct(p.productId));
             if (!ours.length || purchaseInFlight.current) return;
             const latest = ours.sort((a, b) => (b.transactionDate || 0) - (a.transactionDate || 0))[0];
@@ -316,7 +411,7 @@ export const PaywallScreen = () => {
         // validateAppleReceipt attaches a purchase to the caller's org, so without one the
         // payment could never activate anything.
         if (!user?.organizationId || user.organizationId === 'default-org') {
-            Alert.alert('No Organization', "Your account isn't linked to an organization. Please contact support.");
+            Alert.alert('No Organization', `Your account isn't linked to an organization. Please contact support at ${SUPPORT_EMAIL}.`);
             return;
         }
         const config = PLAN_CONFIG[selectedPlan];
@@ -347,6 +442,12 @@ export const PaywallScreen = () => {
     const handleRestorePurchases = async () => {
         setLoading(true);
         try {
+            // Without a connection fetchAvailablePurchases reports nothing, which would read
+            // as "no subscription". initIAP() retries a failed connection.
+            if (!(await initIAP())) {
+                Alert.alert('App Store Unavailable', 'We could not connect to the App Store. Check your connection and try again.');
+                return;
+            }
             const purchases = await fetchAvailablePurchases();
             const ours = purchases.filter((p) => isOurProduct(p.productId));
             if (!ours.length) {
@@ -361,7 +462,10 @@ export const PaywallScreen = () => {
             }
             const result = await validateReceiptWithServer(jws, latest.productId);
             if (!result.valid) {
-                Alert.alert('Restore Failed', result.reason ?? 'We could not verify your existing purchase. Please contact support.');
+                Alert.alert(
+                    'Restore Failed',
+                    result.reason ?? `We could not verify your existing purchase. Please contact support at ${SUPPORT_EMAIL}.`
+                );
                 return;
             }
             await finishPurchase(latest);
@@ -400,7 +504,7 @@ export const PaywallScreen = () => {
                     <Text style={styles.errorText}>
                         We could not load subscription plans from the App Store. Check your connection and tap Retry.
                     </Text>
-                    <TouchableOpacity style={styles.retryButton} onPress={loadProducts}>
+                    <TouchableOpacity style={styles.retryButton} onPress={handleRetry}>
                         <Text style={styles.retryButtonText}>RETRY</Text>
                     </TouchableOpacity>
                 </View>
@@ -431,7 +535,7 @@ export const PaywallScreen = () => {
             {isActive ? (
                 <TouchableOpacity
                     style={styles.subscribeButton}
-                    onPress={() => Linking.openURL(MANAGE_SUBSCRIPTIONS_URL)}
+                    onPress={() => openLink(MANAGE_SUBSCRIPTIONS_URL, 'Manage Subscription')}
                 >
                     <Text style={styles.subscribeButtonText}>MANAGE SUBSCRIPTION</Text>
                 </TouchableOpacity>
@@ -455,19 +559,21 @@ export const PaywallScreen = () => {
                 </>
             )}
 
-            <Text style={styles.disclaimer}>
-                HolyGuard subscriptions are auto-renewable. Each plan renews monthly at the price shown above (Individual $9.99/mo, Team $49.99/mo, Enterprise $99.99/mo) and provides the listed seats and features for the subscription period. Payment is charged to your Apple ID at confirmation of purchase. Subscriptions automatically renew unless cancelled at least 24 hours before the end of the current period. You can manage and cancel your subscription anytime in your Apple ID account settings.
-            </Text>
+            <Text style={styles.disclaimer}>{buildDisclaimer(subs)}</Text>
 
             <View style={styles.legalLinks}>
-                <TouchableOpacity onPress={() => Linking.openURL(TERMS_URL)}>
+                <TouchableOpacity onPress={() => openLink(TERMS_URL, 'Terms of Use')} accessibilityRole="link">
                     <Text style={styles.legalLinkText}>Terms of Use (EULA)</Text>
                 </TouchableOpacity>
                 <Text style={styles.legalLinkSeparator}>·</Text>
-                <TouchableOpacity onPress={() => Linking.openURL(PRIVACY_URL)}>
+                <TouchableOpacity onPress={() => openLink(PRIVACY_URL, 'Privacy Policy')} accessibilityRole="link">
                     <Text style={styles.legalLinkText}>Privacy Policy</Text>
                 </TouchableOpacity>
             </View>
+
+            {/* Root gate only: an admin who doesn't subscribe can still sign out or delete
+                the account. The informational mode (Settings → Subscription Plans) has both in Settings. */}
+            {!isActive && <AccountActions style={styles.accountActions} />}
         </ScrollView>
     );
 };
@@ -513,6 +619,8 @@ const styles = StyleSheet.create({
         backgroundColor: theme.colors.white,
         borderRadius: 12,
         padding: 16,
+        // Room for the radio button (absolutely positioned at left 16) so it doesn't cover the name.
+        paddingLeft: 48,
         borderWidth: 2,
         borderColor: theme.colors.border,
         position: 'relative',
@@ -549,6 +657,7 @@ const styles = StyleSheet.create({
         fontSize: 18,
         fontWeight: '900',
         color: theme.colors.textPrimary,
+        flexShrink: 1,
     },
     planNameSelected: {
         color: theme.colors.primary,
@@ -557,9 +666,23 @@ const styles = StyleSheet.create({
         fontSize: 18,
         fontWeight: '900',
         color: theme.colors.textPrimary,
+        flexShrink: 1,
+        marginLeft: 8,
+        textAlign: 'right',
     },
     planPriceSelected: {
         color: theme.colors.primary,
+    },
+    planPeriod: {
+        fontSize: 13,
+        fontWeight: '600',
+        color: theme.colors.textSecondary,
+    },
+    planUnavailable: {
+        fontSize: 13,
+        fontWeight: '600',
+        color: theme.colors.textSecondary,
+        marginLeft: 8,
     },
     planDescription: {
         fontSize: 13,
@@ -652,6 +775,9 @@ const styles = StyleSheet.create({
         fontSize: 12,
         color: theme.colors.gray,
         marginHorizontal: 8,
+    },
+    accountActions: {
+        marginTop: 20,
     },
     errorBox: {
         backgroundColor: theme.colors.white,

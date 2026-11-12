@@ -18,7 +18,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { theme } from '../theme';
 import { useAuth } from '../context/AuthContext';
 import { db, storage } from '../config/firebase';
-import { collection, addDoc, serverTimestamp, doc, getDoc } from 'firebase/firestore';
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import * as ImagePicker from 'expo-image-picker';
 import { RESOURCE_CATEGORIES, RESOURCE_CATEGORY_COLORS } from '../constants/categories';
@@ -126,23 +126,18 @@ export const CreateResourceScreen: React.FC<CreateResourceScreenProps> = ({ navi
         imageUrl = await uploadImage(imageUri);
       }
 
-      // Fetch user's organization details
-      const userDoc = await getDoc(doc(db, 'users', user!.id));
-      const userData = userDoc.data();
-
-      let organizationName = '';
-      if (userData?.organizationId) {
-        const orgDoc = await getDoc(doc(db, 'organizations', userData.organizationId));
-        organizationName = orgDoc.data()?.name || '';
-      }
+      // The poster's org as the security rules read it (AuthContext uses the same
+      // 'organization_id wins' order as myOrgId()), so the org's admins can moderate it.
+      const orgId =
+        user?.organizationId && user.organizationId !== 'default-org' ? user.organizationId : '';
 
       await addDoc(collection(db, 'resources'), {
         title: title.trim(),
         description: description.trim(),
         category,
         imageUrl,
-        organizationId: userData?.organizationId || '',
-        organizationName,
+        organizationId: orgId,
+        organizationName: orgId ? user?.organizationName || '' : '',
         postedBy: user!.id,
         postedByName: user!.name || 'Unknown User',
         timestamp: serverTimestamp(),

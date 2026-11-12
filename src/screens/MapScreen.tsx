@@ -283,8 +283,9 @@ export const MapScreen = () => {
           <MapView
             style={styles.map}
             styleURL={Mapbox.StyleURL.Street}
-            logoEnabled={false}
-            attributionEnabled={false}
+            // Mapbox's terms require its wordmark and the map data attribution to stay visible.
+            logoEnabled={true}
+            attributionEnabled={true}
             compassEnabled={true}
             compassPosition={{ top: 100, right: 16 }}
             onPress={() => { setSelectedOrg(null); setSelectedAlert(null); }}
@@ -591,7 +592,6 @@ export const MapScreen = () => {
                 {alerts.length} Active {alerts.length === 1 ? 'Alert' : 'Alerts'} (24h)
               </Text>
             )}
-            <Text style={styles.sponsorTag}>Your Logo Here</Text>
           </View>
         </>
       )}
@@ -736,12 +736,6 @@ const styles = StyleSheet.create({
   overlayText: {
     color: theme.colors.white,
     fontWeight: 'bold',
-  },
-  sponsorTag: {
-    fontSize: 8,
-    color: 'rgba(255, 255, 255, 0.5)',
-    marginTop: 4,
-    textAlign: 'center',
   },
   overlayAlertCount: {
     color: theme.colors.alertYellow,

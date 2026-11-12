@@ -1,14 +1,16 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { View, Text, StyleSheet, TextInput, TouchableOpacity, Alert, ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView, Linking } from 'react-native';
 import { logger } from '../utils/logger';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { theme } from '../theme';
 import { auth, db } from '../config/firebase';
-import { createUserWithEmailAndPassword, sendEmailVerification } from 'firebase/auth';
-import { doc, setDoc, serverTimestamp, collection, addDoc } from 'firebase/firestore';
+import { createUserWithEmailAndPassword, sendEmailVerification, deleteUser, signOut, type User } from 'firebase/auth';
+import { doc, getDoc, serverTimestamp, collection, addDoc } from 'firebase/firestore';
 import { validateEmail, validatePassword } from '../utils/validation';
 import { GooglePlacesAutocomplete } from 'react-native-google-places-autocomplete';
 import { GOOGLE_PLACES_API_KEY } from '../config/keys';
+import { useAuth, beginSignUp, endSignUp } from '../context/AuthContext';
+import { TERMS_URL, PRIVACY_URL, FUNCTIONS_BASE_URL, SUPPORT_EMAIL } from '../constants/links';
 
 const formatEIN = (text: string) => {
     const digits = text.replace(/\D/g, '').slice(0, 9);
@@ -20,7 +22,145 @@ const formatEIN = (text: string) => {
 
 const totalSteps = (creatingOrg: boolean) => creatingOrg ? 4 : 3;
 
+// How long sign-up waits for the automated organization checks before moving on. The
+// checks keep running on the server; the Pending screen shows their results later.
+const VERIFY_ORG_TIMEOUT_MS = 20000;
+
+// Verification checks shown after sign-up. The organization email check is left out: its
+// code is never delivered, so it can't be completed.
+const VERIFICATION_CHECK_LABELS: Array<{ key: string; label: string }> = [
+    { key: 'googlePlaces', label: 'Google Places' },
+    { key: 'einVerification', label: 'EIN / 501(c)(3)' },
+    { key: 'phoneSms', label: 'Phone' },
+];
+
+type InviteCodeResult = {
+    valid: boolean;
+    role: string;
+    organizationId: string;
+    organizationName: string;
+    error?: string;
+};
+
+// A sign-up step failed and has been rolled back; message is safe to show as is.
+const SIGN_UP_ABANDONED = 'signup-abandoned';
+
+const abandonedError = (message: string) => {
+    const error: any = new Error(message);
+    error.code = SIGN_UP_ABANDONED;
+    return error;
+};
+
+const describeSignUpError = (error: any): string => {
+    if (error?.code === SIGN_UP_ABANDONED) return error.message;
+    switch (error?.code) {
+        case 'auth/email-already-in-use':
+            return 'This email is already registered. Please log in instead.';
+        case 'auth/invalid-email':
+            return 'Please enter a valid email address.';
+        case 'auth/weak-password':
+            return 'Please choose a stronger password.';
+        case 'auth/network-request-failed':
+            return 'Network error. Please check your connection and try again.';
+        case 'auth/too-many-requests':
+            return 'Too many attempts. Please wait a few minutes and try again.';
+        default:
+            return 'Unable to complete registration. Please try again.';
+    }
+};
+
+// true / false when we could tell whether users/{uid} exists, null when we couldn't.
+const profileExists = async (uid: string): Promise<boolean | null> => {
+    try {
+        const snapshot = await getDoc(doc(db, 'users', uid));
+        return snapshot.exists();
+    } catch (error) {
+        logger.error('Could not check for the new profile:', error);
+        return null;
+    }
+};
+
+// Undo a sign-up that failed before its profile existed, so the person isn't left with an
+// Auth account that has no profile (which can't sign up again with the same email and
+// can't reach the app). Removes the Auth account when the profile is confirmed missing;
+// otherwise just signs out. Returns the message to show.
+const rollBackSignUp = async (user: User): Promise<string> => {
+    const exists = await profileExists(user.uid);
+    if (exists === false) {
+        try {
+            await deleteUser(user);
+            return "We couldn't finish setting up your account, so nothing was saved. Please check your connection and try again.";
+        } catch (error) {
+            logger.error('Could not remove the incomplete account:', error);
+        }
+    }
+    try {
+        await signOut(auth);
+    } catch (error) {
+        logger.error('Could not sign out after a failed sign-up:', error);
+    }
+    return `We couldn't finish setting up your account. Please check your connection and try again. If this email now shows as already registered, contact ${SUPPORT_EMAIL} and we'll sort it out.`;
+};
+
+// Creates users/{uid} through the Firestore REST API (a POST with documentId creates the
+// doc and fails if it already exists). Every sign-up writes exactly these 8 fields.
+// Invite joins pass role '' and organizationId '': the rules let a new profile claim only
+// a freshly minted org id, and the repairInviteJoin trigger attaches the user to the
+// invite's org only for this exact shape (functions/inviteJoinRepair.js).
+const writeSignUpProfile = async (
+    user: User,
+    profile: { name: string; email: string; role: '' | 'admin'; organizationId: string },
+) => {
+    const idToken = await user.getIdToken();
+    const url = `https://firestore.googleapis.com/v1/projects/holyguard-app/databases/(default)/documents/users?documentId=${user.uid}`;
+    const now = new Date().toISOString();
+
+    const firestoreDoc = {
+        fields: {
+            id: { stringValue: user.uid },
+            name: { stringValue: profile.name },
+            email: { stringValue: profile.email },
+            role: { stringValue: profile.role },
+            organization_id: { stringValue: profile.organizationId },
+            email_verified: { booleanValue: false },
+            created_at: { timestampValue: now },
+            tos_accepted_at: { timestampValue: now },
+        }
+    };
+
+    const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${idToken}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(firestoreDoc),
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text().catch(() => '');
+        throw new Error(`Failed to create user profile (${response.status}): ${errorText}`);
+    }
+};
+
+// Writes the profile; if that fails and the profile really isn't there, rolls the sign-up
+// back and throws a displayable error.
+const writeProfileOrRollBack = async (
+    user: User,
+    profile: { name: string; email: string; role: '' | 'admin'; organizationId: string },
+) => {
+    try {
+        await writeSignUpProfile(user, profile);
+    } catch (profileError) {
+        logger.error('Profile creation failed:', profileError);
+        // The write may have landed even though the response was lost.
+        if ((await profileExists(user.uid)) === true) return;
+        throw abandonedError(await rollBackSignUp(user));
+    }
+};
+
 export const SignUpScreen = ({ navigation }: any) => {
+    const { refreshProfile } = useAuth();
     const [step, setStep] = useState(1);
     const [name, setName] = useState('');
     const [email, setEmail] = useState('');
@@ -31,8 +171,7 @@ export const SignUpScreen = ({ navigation }: any) => {
     const [churchAddress, setChurchAddress] = useState('');
     const [coordinates, setCoordinates] = useState<{ latitude: number; longitude: number } | null>(null);
     const [loading, setLoading] = useState(false);
-    const [validatedRole, setValidatedRole] = useState<string>('');
-    const [validatedOrgId, setValidatedOrgId] = useState<string>('');
+    // Display only: the org a just-validated invite code belongs to.
     const [validatedOrgName, setValidatedOrgName] = useState<string>('');
     const placesRef = useRef<any>(null);
     const [tosAccepted, setTosAccepted] = useState(false);
@@ -40,14 +179,59 @@ export const SignUpScreen = ({ navigation }: any) => {
     // New verification fields
     const [ein, setEin] = useState('');
     const [website, setWebsite] = useState('');
-    const [orgEmail, setOrgEmail] = useState('');
     const [orgPhone, setOrgPhone] = useState('');
     const [verifying, setVerifying] = useState(false);
     const [verificationResults, setVerificationResults] = useState<any>(null);
+    const [finishing, setFinishing] = useState(false);
 
-    const validateInviteCode = async (code: string) => {
+    // Sign-up hold bookkeeping (see beginSignUp in AuthContext).
+    const mounted = useRef(true);
+    const holdActive = useRef(false);   // this screen began a sign-up hold that is still on
+    const flowRunning = useRef(false);  // a sign-up request sequence is in flight
+
+    const startHold = () => {
+        beginSignUp();
+        holdActive.current = true;
+    };
+
+    const releaseHold = () => {
+        if (holdActive.current) {
+            holdActive.current = false;
+            endSignUp();
+        }
+    };
+
+    // Success: load the new profile, which ends the hold and moves on to the next screen.
+    const finishSignUp = async () => {
+        holdActive.current = false;
+        await refreshProfile();
+    };
+
+    useEffect(() => {
+        mounted.current = true;
+        return () => {
+            mounted.current = false;
+            // Leaving while the results step is up: let the app load the new account. A
+            // sequence still in flight releases the hold itself when it ends.
+            if (!flowRunning.current) {
+                releaseHold();
+            }
+        };
+    }, []);
+
+    // No swipe-back while account requests are in flight or the results step is up.
+    useEffect(() => {
+        navigation?.setOptions?.({ gestureEnabled: !(loading || step === 4) });
+    }, [navigation, loading, step]);
+
+    const selectJoinMode = (joining: boolean) => {
+        setJoiningExistingOrg(joining);
+        setValidatedOrgName('');
+    };
+
+    const validateInviteCode = async (code: string): Promise<InviteCodeResult> => {
         try {
-            const response = await fetch('https://us-central1-holyguard-app.cloudfunctions.net/validateInviteCode', {
+            const response = await fetch(`${FUNCTIONS_BASE_URL}/validateInviteCode`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -64,17 +248,17 @@ export const SignUpScreen = ({ navigation }: any) => {
                 error: data.error
             };
         } catch (error) {
-            return { valid: false, role: 'member', organizationId: '', organizationName: '', error: 'Network error' };
+            return { valid: false, role: 'member', organizationId: '', organizationName: '', error: 'Network error. Please check your connection and try again.' };
         }
     };
 
     const handleStep1Next = async () => {
-        if (!name || !email || !password) {
+        if (!name.trim() || !email.trim() || !password) {
             Alert.alert("Error", "Please fill in all fields.");
             return;
         }
 
-        const emailValidation = validateEmail(email);
+        const emailValidation = validateEmail(email.trim());
         if (!emailValidation.valid) {
             Alert.alert("Invalid Email", emailValidation.error || 'Please enter a valid email');
             return;
@@ -95,88 +279,118 @@ export const SignUpScreen = ({ navigation }: any) => {
     };
 
     const handleStep2Next = async () => {
+        // A second tap before the button disables must not validate the code (and use up
+        // an invite use) again, or start a second account sequence.
+        if (flowRunning.current) return;
         if (joiningExistingOrg) {
-            if (!inviteCode) {
+            if (!inviteCode.trim()) {
                 Alert.alert("Error", "Please enter an invite code.");
                 return;
             }
 
             setLoading(true);
-            const result = await validateInviteCode(inviteCode);
-            setLoading(false);
+            flowRunning.current = true;
+            const result = await validateInviteCode(inviteCode.trim());
 
             if (!result.valid) {
+                flowRunning.current = false;
+                setLoading(false);
                 Alert.alert("Invalid Code", result.error || 'This invite code is not valid.');
                 return;
             }
 
-            setValidatedRole(result.role);
-            setValidatedOrgId(result.organizationId);
             setValidatedOrgName(result.organizationName);
-
-            await handleJoinExistingOrg();
+            await handleJoinExistingOrg(result);
         } else {
-            setValidatedRole('admin');
+            setValidatedOrgName('');
             setStep(3);
         }
     };
 
-    const handleJoinExistingOrg = async () => {
+    // Invite join. The profile is created org-less (role '' and organization_id ''); the
+    // repairInviteJoin trigger attaches it to the invite's org from the join intent that
+    // validateInviteCode just recorded.
+    const handleJoinExistingOrg = async (invite: InviteCodeResult) => {
         setLoading(true);
+        flowRunning.current = true;
+        startHold();
+        let finished = false;
         try {
-            const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+            const trimmedEmail = email.trim();
+            const userCredential = await createUserWithEmailAndPassword(auth, trimmedEmail, password);
             const user = userCredential.user;
 
+            await writeProfileOrRollBack(user, {
+                name: name.trim(),
+                email: trimmedEmail,
+                role: '',
+                organizationId: '',
+            });
+
+            try {
+                await sendEmailVerification(user);
+            } catch (emailError) {
+                // The next screen has a Resend button.
+                logger.error('Could not send the verification email:', emailError);
+            }
+
+            finished = true;
+            await finishSignUp();
+
+            Alert.alert(
+                invite.organizationName ? `Welcome to ${invite.organizationName}` : 'Welcome to HolyGuard',
+                `We sent a verification link to ${trimmedEmail}. Tap it, then come back to the app.`
+            );
+        } catch (error: any) {
+            logger.error('Invite sign-up failed:', error);
+            Alert.alert("Registration Failed", describeSignUpError(error));
+        } finally {
+            flowRunning.current = false;
+            if (!finished) releaseHold();
+            if (mounted.current) setLoading(false);
+        }
+    };
+
+    // Runs the automated organization checks. Never throws: a failure or timeout leaves
+    // the org pending, and the Pending screen can run the checks again.
+    const runOrganizationChecks = async (user: User, orgDocId: string) => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), VERIFY_ORG_TIMEOUT_MS);
+        try {
             const idToken = await user.getIdToken();
-            const url = `https://firestore.googleapis.com/v1/projects/holyguard-app/databases/(default)/documents/users?documentId=${user.uid}`;
-
-            const firestoreDoc = {
-                fields: {
-                    id: { stringValue: user.uid },
-                    name: { stringValue: name },
-                    email: { stringValue: email },
-                    role: { stringValue: validatedRole },
-                    organization_id: { stringValue: validatedOrgId },
-                    email_verified: { booleanValue: false },
-                    created_at: { timestampValue: new Date().toISOString() },
-                    tos_accepted_at: { timestampValue: new Date().toISOString() },
-                }
-            };
-
-            const response = await fetch(url, {
+            const verifyResponse = await fetch(`${FUNCTIONS_BASE_URL}/verifyOrganization`, {
                 method: 'POST',
                 headers: {
                     'Authorization': `Bearer ${idToken}`,
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify(firestoreDoc),
+                body: JSON.stringify({
+                    organizationId: orgDocId,
+                    ein: ein ? ein.replace(/\D/g, '') : undefined,
+                    phone: orgPhone.trim() || undefined,
+                    website: website.trim() || undefined,
+                }),
+                signal: controller.signal,
             });
-
-            if (!response.ok) {
-                throw new Error('Failed to create user profile');
+            const verifyResult = await verifyResponse.json();
+            if (!verifyResponse.ok) {
+                throw new Error(verifyResult?.error || `verifyOrganization returned ${verifyResponse.status}`);
             }
-
-            await sendEmailVerification(user);
-
-            Alert.alert(
-                "Welcome to " + validatedOrgName,
-                "Please check your email to verify your account."
-            );
-        } catch (error: any) {
-            let errorMessage = "Unable to complete registration. ";
-            if (error.code === 'auth/email-already-in-use') {
-                errorMessage = "This email is already registered. Please log in instead.";
-            } else if (error.code === 'auth/network-request-failed') {
-                errorMessage = "Network error. Please check your connection and try again.";
-            }
-            Alert.alert("Registration Failed", errorMessage);
+            return verifyResult;
+        } catch (verifyError) {
+            logger.error('Verification call failed:', verifyError);
+            return { status: 'pending', score: 0, checks: {}, incomplete: true };
         } finally {
-            setLoading(false);
+            clearTimeout(timer);
         }
     };
 
+    // New organization. Order matters for the security rules: the org first (any signed-in
+    // user may create a pending org with a fresh id), then the admin profile that claims it,
+    // then #general (only an admin of the org may create its channels).
     const handleCompleteSignup = async () => {
-        if (!churchName) {
+        if (flowRunning.current) return;
+        if (!churchName.trim()) {
             Alert.alert("Error", "Please enter your church or organization name.");
             return;
         }
@@ -187,121 +401,100 @@ export const SignUpScreen = ({ navigation }: any) => {
         }
 
         setLoading(true);
+        flowRunning.current = true;
+        startHold();
+        let reachedResults = false;
         try {
+            const trimmedEmail = email.trim();
+
             // 1. Create Auth User
-            const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+            const userCredential = await createUserWithEmailAndPassword(auth, trimmedEmail, password);
             const user = userCredential.user;
 
             // 2. Create organization with pending status
             const orgId = `org_${Date.now()}`;
-            const orgDocRef = await addDoc(collection(db, 'organizations'), {
-                id: orgId,
-                name: churchName,
-                address: churchAddress,
-                latitude: coordinates.latitude,
-                longitude: coordinates.longitude,
-                status: 'pending',
-                ein: ein ? ein.replace(/\D/g, '') : null,
-                website: website || null,
-                orgEmail: orgEmail || null,
-                phone: orgPhone || null,
-                verificationScore: 0,
-                verificationSubmittedAt: serverTimestamp(),
-                created_at: serverTimestamp(),
-            });
-
-            // 3. Create default #general channel
-            await addDoc(collection(db, 'channels'), {
-                name: 'general',
-                organizationId: orgId,
-                createdBy: user.uid,
-                createdAt: serverTimestamp(),
-                isDefault: true,
-            });
-
-            // 4. Create User Profile
-            const idToken = await user.getIdToken();
-            const url = `https://firestore.googleapis.com/v1/projects/holyguard-app/databases/(default)/documents/users?documentId=${user.uid}`;
-
-            const firestoreDoc = {
-                fields: {
-                    id: { stringValue: user.uid },
-                    name: { stringValue: name },
-                    email: { stringValue: email },
-                    role: { stringValue: validatedRole },
-                    organization_id: { stringValue: orgId },
-                    email_verified: { booleanValue: false },
-                    created_at: { timestampValue: new Date().toISOString() },
-                    tos_accepted_at: { timestampValue: new Date().toISOString() },
-                }
-            };
-
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${idToken}`,
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(firestoreDoc),
-            });
-
-            if (!response.ok) {
-                const errorText = await response.text();
-                throw new Error(`Failed to create user profile: ${errorText}`);
-            }
-
-            // 5. Send Email Verification
-            await sendEmailVerification(user);
-
-            // 6. Move to verification step and kick off automated checks
-            setStep(4);
-            setVerifying(true);
-
+            let orgDocId: string;
             try {
-                const verifyResponse = await fetch(
-                    'https://us-central1-holyguard-app.cloudfunctions.net/verifyOrganization',
-                    {
-                        method: 'POST',
-                        headers: {
-                            'Authorization': `Bearer ${idToken}`,
-                            'Content-Type': 'application/json',
-                        },
-                        body: JSON.stringify({
-                            organizationId: orgDocRef.id,
-                            ein: ein ? ein.replace(/\D/g, '') : undefined,
-                            orgEmail: orgEmail || undefined,
-                            phone: orgPhone || undefined,
-                            website: website || undefined,
-                        }),
-                    }
-                );
-
-                const verifyResult = await verifyResponse.json();
-                setVerificationResults(verifyResult);
-            } catch (verifyError) {
-                logger.error('Verification call failed:', verifyError);
-                setVerificationResults({
+                const orgDocRef = await addDoc(collection(db, 'organizations'), {
+                    id: orgId,
+                    name: churchName.trim(),
+                    address: churchAddress,
+                    latitude: coordinates.latitude,
+                    longitude: coordinates.longitude,
                     status: 'pending',
-                    score: 0,
-                    checks: {},
+                    ein: ein ? ein.replace(/\D/g, '') : null,
+                    website: website.trim() || null,
+                    phone: orgPhone.trim() || null,
+                    verificationScore: 0,
+                    verificationSubmittedAt: serverTimestamp(),
+                    created_at: serverTimestamp(),
                 });
+                orgDocId = orgDocRef.id;
+            } catch (orgError) {
+                logger.error('Organization creation failed:', orgError);
+                throw abandonedError(await rollBackSignUp(user));
             }
 
-            setVerifying(false);
-        } catch (error: any) {
-            let errorMessage = "Unable to complete registration. ";
-            if (error.code === 'auth/email-already-in-use') {
-                errorMessage = "This email is already registered. Please log in instead.";
-            } else if (error.code === 'auth/network-request-failed') {
-                errorMessage = "Network error. Please check your connection and try again.";
-            } else if (error.message) {
-                errorMessage += error.message;
+            // 3. Create the admin profile that owns the new org
+            await writeProfileOrRollBack(user, {
+                name: name.trim(),
+                email: trimmedEmail,
+                role: 'admin',
+                organizationId: orgId,
+            });
+
+            // 4. Create default #general channel. Not fatal: the admin can add channels later.
+            try {
+                await addDoc(collection(db, 'channels'), {
+                    name: 'general',
+                    organizationId: orgId,
+                    createdBy: user.uid,
+                    createdAt: serverTimestamp(),
+                    isDefault: true,
+                });
+            } catch (channelError) {
+                logger.error('Could not create the #general channel:', channelError);
             }
-            Alert.alert("Registration Failed", errorMessage);
-            setLoading(false);
-            return;
+
+            // 5. Send Email Verification (the next screen has a Resend button)
+            try {
+                await sendEmailVerification(user);
+            } catch (emailError) {
+                logger.error('Could not send the verification email:', emailError);
+            }
+
+            // 6. Show the verification step while the automated checks run
+            if (mounted.current) {
+                setStep(4);
+                setVerifying(true);
+                setLoading(false);
+            }
+
+            const verifyResult = await runOrganizationChecks(user, orgDocId);
+            if (mounted.current) {
+                setVerificationResults(verifyResult);
+                setVerifying(false);
+            }
+            reachedResults = true;
+        } catch (error: any) {
+            logger.error('New organization sign-up failed:', error);
+            Alert.alert("Registration Failed", describeSignUpError(error));
+        } finally {
+            flowRunning.current = false;
+            // On success the results stay up until CONTINUE; if the screen is already gone,
+            // let the app load the new account now.
+            if (!reachedResults || !mounted.current) releaseHold();
+            if (mounted.current) setLoading(false);
         }
-        setLoading(false);
+    };
+
+    const handleContinueAfterVerification = async () => {
+        setFinishing(true);
+        try {
+            await finishSignUp();
+        } finally {
+            if (mounted.current) setFinishing(false);
+        }
     };
 
     const getStepTitle = () => {
@@ -329,7 +522,10 @@ export const SignUpScreen = ({ navigation }: any) => {
             behavior={Platform.OS === "ios" ? "padding" : "height"}
             style={styles.container}
         >
-            <ScrollView contentContainerStyle={styles.scrollContent}>
+            {/* 'handled' on this outer ScrollView too: a nested ScrollView's setting only
+                works when every ancestor has it, so the first tap on an address suggestion
+                (with the keyboard up) selects it instead of just closing the keyboard. */}
+            <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps='handled'>
                 <View style={styles.header}>
                     <Text style={styles.title}>{getStepTitle()}</Text>
                     <Text style={styles.subtitle}>{getStepSubtitle()}</Text>
@@ -351,6 +547,7 @@ export const SignUpScreen = ({ navigation }: any) => {
                         style={styles.input}
                         autoCapitalize="none"
                         keyboardType="email-address"
+                        autoCorrect={false}
                         value={email}
                         onChangeText={setEmail}
                         placeholder="email@domain.com"
@@ -374,21 +571,21 @@ export const SignUpScreen = ({ navigation }: any) => {
                     >
                         <View style={[styles.checkbox, tosAccepted && styles.checkboxChecked]}>
                             {tosAccepted && (
-                                <MaterialCommunityIcons name="check" size={16} color={theme.colors.white} />
+                                <MaterialCommunityIcons name="check" size={16} color={theme.colors.textPrimary} />
                             )}
                         </View>
                         <Text style={styles.tosText}>
                             I agree to the{' '}
                             <Text
                                 style={styles.tosLink}
-                                onPress={() => Linking.openURL('https://atmksheldon.github.io/holyguard/terms.html')}
+                                onPress={() => Linking.openURL(TERMS_URL)}
                             >
                                 Terms of Service
                             </Text>
                             {' '}and{' '}
                             <Text
                                 style={styles.tosLink}
-                                onPress={() => Linking.openURL('https://atmksheldon.github.io/holyguard/privacy.html')}
+                                onPress={() => Linking.openURL(PRIVACY_URL)}
                             >
                                 Privacy Policy
                             </Text>
@@ -401,7 +598,7 @@ export const SignUpScreen = ({ navigation }: any) => {
                         disabled={loading || !tosAccepted}
                     >
                         {loading ? (
-                            <ActivityIndicator color={theme.colors.white} />
+                            <ActivityIndicator color={theme.colors.textPrimary} />
                         ) : (
                             <Text style={styles.buttonText}>NEXT</Text>
                         )}
@@ -417,7 +614,7 @@ export const SignUpScreen = ({ navigation }: any) => {
 
                     <TouchableOpacity
                         style={[styles.toggleOption, joiningExistingOrg && styles.toggleOptionSelected]}
-                        onPress={() => setJoiningExistingOrg(true)}
+                        onPress={() => selectJoinMode(true)}
                     >
                         <View style={styles.toggleOptionContent}>
                             <Text style={[styles.toggleOptionTitle, joiningExistingOrg && styles.toggleOptionTitleSelected]}>
@@ -429,7 +626,7 @@ export const SignUpScreen = ({ navigation }: any) => {
 
                     <TouchableOpacity
                         style={[styles.toggleOption, !joiningExistingOrg && styles.toggleOptionSelected]}
-                        onPress={() => setJoiningExistingOrg(false)}
+                        onPress={() => selectJoinMode(false)}
                     >
                         <View style={styles.toggleOptionContent}>
                             <Text style={[styles.toggleOptionTitle, !joiningExistingOrg && styles.toggleOptionTitleSelected]}>
@@ -446,7 +643,11 @@ export const SignUpScreen = ({ navigation }: any) => {
                                 style={[styles.input, styles.codeInput]}
                                 autoCapitalize="characters"
                                 value={inviteCode}
-                                onChangeText={setInviteCode}
+                                onChangeText={(text) => {
+                                    setInviteCode(text);
+                                    setValidatedOrgName('');
+                                }}
+                                autoCorrect={false}
                                 placeholder="JOIN-XXXX-XXXX"
                                 placeholderTextColor={theme.colors.gray}
                             />
@@ -464,13 +665,13 @@ export const SignUpScreen = ({ navigation }: any) => {
                         disabled={loading}
                     >
                         {loading ? (
-                            <ActivityIndicator color={theme.colors.white} />
+                            <ActivityIndicator color={theme.colors.textPrimary} />
                         ) : (
                             <Text style={styles.buttonText}>NEXT</Text>
                         )}
                     </TouchableOpacity>
 
-                    <TouchableOpacity onPress={() => setStep(1)} style={styles.linkContainer}>
+                    <TouchableOpacity onPress={() => setStep(1)} style={styles.linkContainer} disabled={loading}>
                         <Text style={styles.linkText}>← Back</Text>
                     </TouchableOpacity>
                 </View>
@@ -487,6 +688,7 @@ export const SignUpScreen = ({ navigation }: any) => {
                         onChangeText={setChurchName}
                         placeholder="First Baptist Church"
                         placeholderTextColor={theme.colors.gray}
+                        maxLength={100}
                     />
 
                     <Text style={styles.label}>FULL ADDRESS</Text>
@@ -568,7 +770,7 @@ export const SignUpScreen = ({ navigation }: any) => {
                     <View style={styles.verificationSection}>
                         <Text style={styles.sectionTitle}>VERIFICATION INFO</Text>
                         <Text style={styles.sectionSubtitle}>
-                            Providing more info speeds up verification. EIN + address gets you instant approval.
+                            Providing more info speeds up verification. A matching EIN and Google-listed address can approve your organization automatically; otherwise an administrator reviews it.
                         </Text>
 
                         <Text style={styles.label}>EIN / TAX ID (OPTIONAL)</Text>
@@ -593,17 +795,6 @@ export const SignUpScreen = ({ navigation }: any) => {
                             keyboardType="url"
                         />
 
-                        <Text style={styles.label}>ORGANIZATION EMAIL (OPTIONAL)</Text>
-                        <TextInput
-                            style={styles.input}
-                            value={orgEmail}
-                            onChangeText={setOrgEmail}
-                            placeholder="admin@yourchurch.org"
-                            placeholderTextColor={theme.colors.gray}
-                            autoCapitalize="none"
-                            keyboardType="email-address"
-                        />
-
                         <Text style={styles.label}>ORGANIZATION PHONE (OPTIONAL)</Text>
                         <TextInput
                             style={styles.input}
@@ -621,13 +812,13 @@ export const SignUpScreen = ({ navigation }: any) => {
                         disabled={loading}
                     >
                         {loading ? (
-                            <ActivityIndicator color={theme.colors.white} />
+                            <ActivityIndicator color={theme.colors.textPrimary} />
                         ) : (
                             <Text style={styles.buttonText}>COMPLETE REGISTRATION</Text>
                         )}
                     </TouchableOpacity>
 
-                    <TouchableOpacity onPress={() => setStep(2)} style={styles.linkContainer}>
+                    <TouchableOpacity onPress={() => setStep(2)} style={styles.linkContainer} disabled={loading}>
                         <Text style={styles.linkText}>← Back</Text>
                     </TouchableOpacity>
                 </ScrollView>
@@ -643,37 +834,33 @@ export const SignUpScreen = ({ navigation }: any) => {
                         <Text style={styles.verificationTitle}>
                             {verifying ? 'VERIFYING ORGANIZATION...' :
                              verificationResults?.status === 'verified' ? 'ORGANIZATION VERIFIED!' :
-                             'VERIFICATION IN PROGRESS'}
+                             'UNDER REVIEW'}
                         </Text>
 
                         <Text style={styles.verificationSubtext}>
                             {verifying ? 'Running automated checks on your organization...' :
                              verificationResults?.status === 'verified'
-                                ? 'Your organization has been approved. Please check your email to verify your account.'
-                                : 'Your organization is under review. You can complete additional verification steps after email verification.'}
+                                ? 'Your organization has been approved. Next, verify your email address.'
+                                : verificationResults?.incomplete
+                                    ? "Your account is set up. We couldn't finish the automated checks just now; you can run them again after you verify your email. If your organization isn't approved automatically, a HolyGuard administrator will review it."
+                                    : "Your account is set up. If your organization isn't approved automatically, a HolyGuard administrator will review it."}
                         </Text>
 
                         {verifying && (
                             <ActivityIndicator size="large" color={theme.colors.primary} style={{ marginTop: 20 }} />
                         )}
 
-                        {verificationResults && !verifying && (
+                        {verificationResults && !verifying && !verificationResults.incomplete && (
                             <View style={styles.checksCard}>
                                 <Text style={styles.checksTitle}>Verification Checks</Text>
 
-                                {['googlePlaces', 'einVerification', 'emailDomain', 'phoneSms'].map((checkKey) => {
-                                    const check = verificationResults.checks?.[checkKey];
-                                    const labels: Record<string, string> = {
-                                        googlePlaces: 'Google Places',
-                                        einVerification: 'EIN / 501(c)(3)',
-                                        emailDomain: 'Email Domain',
-                                        phoneSms: 'Phone / SMS',
-                                    };
+                                {VERIFICATION_CHECK_LABELS.map(({ key, label }) => {
+                                    const check = verificationResults.checks?.[key];
                                     const icon = getCheckIcon(check?.status || 'skipped');
                                     return (
-                                        <View key={checkKey} style={styles.checkRow}>
+                                        <View key={key} style={styles.checkRow}>
                                             <MaterialCommunityIcons name={icon.name} size={20} color={icon.color} />
-                                            <Text style={styles.checkLabel}>{labels[checkKey]}</Text>
+                                            <Text style={styles.checkLabel}>{label}</Text>
                                             <Text style={[styles.checkScore, { color: icon.color }]}>
                                                 {check?.score || 0} pts
                                             </Text>
@@ -686,18 +873,33 @@ export const SignUpScreen = ({ navigation }: any) => {
                                     <MaterialCommunityIcons name="sigma" size={20} color={theme.colors.textPrimary} />
                                     <Text style={[styles.checkLabel, { fontWeight: 'bold' }]}>Total Score</Text>
                                     <Text style={[styles.checkScore, { fontWeight: 'bold', color: theme.colors.textPrimary }]}>
-                                        {verificationResults.score || 0} / 100
+                                        {verificationResults.score || 0} pts
                                     </Text>
                                 </View>
+                                <Text style={styles.thresholdNote}>60 points approves an organization automatically.</Text>
                             </View>
                         )}
 
                         {verificationResults && !verifying && (
                             <Text style={styles.verificationNote}>
                                 {verificationResults.status === 'verified'
-                                    ? 'Check your inbox to verify your email and start using HolyGuard.'
-                                    : 'After verifying your email, you can complete additional checks to speed up approval.'}
+                                    ? 'Check your inbox for the verification link, then start using HolyGuard.'
+                                    : 'Check your inbox for the verification link. After you verify your email, you can add details to speed up approval.'}
                             </Text>
+                        )}
+
+                        {!verifying && (
+                            <TouchableOpacity
+                                style={[styles.button, styles.continueButton]}
+                                onPress={handleContinueAfterVerification}
+                                disabled={finishing}
+                            >
+                                {finishing ? (
+                                    <ActivityIndicator color={theme.colors.textPrimary} />
+                                ) : (
+                                    <Text style={styles.buttonText}>CONTINUE</Text>
+                                )}
+                            </TouchableOpacity>
                         )}
                     </View>
                 </View>
@@ -907,6 +1109,17 @@ const styles = StyleSheet.create({
         height: 1,
         backgroundColor: theme.colors.border,
         marginVertical: 6,
+    },
+    thresholdNote: {
+        fontSize: 11,
+        color: theme.colors.textSecondary,
+        textAlign: 'center',
+        marginTop: 6,
+        fontStyle: 'italic',
+    },
+    continueButton: {
+        alignSelf: 'stretch',
+        marginTop: 24,
     },
     verificationNote: {
         fontSize: 13,

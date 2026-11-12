@@ -8,8 +8,9 @@ import { initIAP } from './src/config/iap';
 
 export default function App() {
   useEffect(() => {
-    // Open the StoreKit connection once at launch. initIAP() is memoized and never
-    // rejects. No cleanup: the connection must never be ended (no endConnection()).
+    // Open the StoreKit connection at launch. initIAP() shares one attempt at a time,
+    // retries after a failed attempt, and never rejects. No cleanup: the connection must
+    // never be ended (no endConnection()).
     initIAP();
   }, []);
 

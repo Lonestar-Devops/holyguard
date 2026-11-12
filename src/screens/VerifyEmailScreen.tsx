@@ -5,6 +5,7 @@ import { auth } from '../config/firebase';
 import { sendEmailVerification } from 'firebase/auth';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
+import { AccountActions } from '../components/AccountActions';
 
 export const VerifyEmailScreen = () => {
     const { logout } = useAuth();
@@ -81,10 +82,6 @@ export const VerifyEmailScreen = () => {
         }
     };
 
-    const handleLogout = () => {
-        logout();
-    };
-
     return (
         <View style={styles.container}>
             <MaterialCommunityIcons name="email-lock" size={80} color={theme.colors.primary} />
@@ -118,9 +115,7 @@ export const VerifyEmailScreen = () => {
                 </Text>
             </TouchableOpacity>
 
-            <TouchableOpacity onPress={handleLogout} style={styles.logoutButton}>
-                <Text style={styles.logoutText}>Sign Out</Text>
-            </TouchableOpacity>
+            <AccountActions style={styles.accountActions} />
         </View>
     );
 };
@@ -194,11 +189,7 @@ const styles = StyleSheet.create({
     disabledText: {
         color: theme.colors.textSecondary,
     },
-    logoutButton: {
+    accountActions: {
         marginTop: 20,
     },
-    logoutText: {
-        color: theme.colors.textSecondary,
-        textDecorationLine: 'underline',
-    }
 });

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, FlatList, TextInput, KeyboardAvoidingView, Platform, Image, ActivityIndicator, Alert } from 'react-native';
 import { logger } from '../utils/logger';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -7,8 +7,9 @@ import * as ImagePicker from 'expo-image-picker';
 import { theme } from '../theme';
 import { useAuth } from '../context/AuthContext';
 import { db, storage } from '../config/firebase';
-import { collection, query, where, orderBy, onSnapshot, addDoc, serverTimestamp, doc, updateDoc } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, addDoc, serverTimestamp, doc, updateDoc, getDoc } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { confirmBlockUser, reportContent, unblockUser, useBlockedUsers } from '../utils/moderation';
 
 interface DirectMessage {
   id: string;
@@ -28,7 +29,10 @@ interface DirectMessageChatScreenProps {
 
 export const DirectMessageChatScreen: React.FC<DirectMessageChatScreenProps> = ({ navigation, route }) => {
   const { user } = useAuth();
-  const { conversationId, otherUser } = route.params;
+  const { blocked } = useBlockedUsers();
+  const conversationId: string = route.params?.conversationId;
+  const otherUser = route.params?.otherUser || { name: 'User', organizationId: '' };
+  const [otherUserId, setOtherUserId] = useState<string | null>(route.params?.otherUserId || null);
   const [messages, setMessages] = useState<DirectMessage[]>([]);
   const [messageText, setMessageText] = useState('');
   const [sending, setSending] = useState(false);
@@ -36,6 +40,42 @@ export const DirectMessageChatScreen: React.FC<DirectMessageChatScreenProps> = (
   const flatListRef = useRef<FlatList>(null);
 
   const isDifferentOrg = otherUser.organizationId !== user?.organizationId;
+  const isBlocked = !!otherUserId && blocked.has(otherUserId);
+  // The rules refuse new messages when the other participant has blocked the caller.
+  const [blockedByOther, setBlockedByOther] = useState(false);
+
+  // Older navigation paths don't pass the other participant's uid; read it from the
+  // conversation (participants are allowed to read it).
+  useEffect(() => {
+    if (otherUserId || !conversationId || !user?.id) return;
+    let cancelled = false;
+    getDoc(doc(db, 'conversations', conversationId))
+      .then(snap => {
+        const participants: string[] = snap.exists() ? snap.data().participants || [] : [];
+        const other = participants.find(id => id !== user.id);
+        if (!cancelled && other) setOtherUserId(other);
+      })
+      .catch(error => logger.error('Error loading conversation:', error));
+    return () => { cancelled = true; };
+  }, [conversationId, otherUserId, user?.id]);
+
+  useEffect(() => {
+    if (!otherUserId || !user?.id) return;
+    let cancelled = false;
+    getDoc(doc(db, 'users', otherUserId))
+      .then(snap => {
+        const list = snap.exists() ? snap.data().blockedUsers : undefined;
+        if (!cancelled) setBlockedByOther(Array.isArray(list) && list.includes(user.id));
+      })
+      .catch(error => logger.error('Error loading the other participant:', error));
+    return () => { cancelled = true; };
+  }, [otherUserId, user?.id]);
+
+  // A blocked user's messages are not shown.
+  const visibleMessages = useMemo(
+    () => (isBlocked ? messages.filter(m => m.senderId === user?.id) : messages),
+    [messages, isBlocked, user?.id]
+  );
 
   useEffect(() => {
     if (!conversationId) return;
@@ -225,12 +265,86 @@ export const DirectMessageChatScreen: React.FC<DirectMessageChatScreenProps> = (
     }
   };
 
+  const handleReportConversation = () => {
+    reportContent({
+      contentType: 'conversation',
+      contentId: conversationId,
+      reportedUserId: otherUserId || undefined,
+      reportedUserName: otherUser.name,
+    });
+  };
+
+  const handleBlock = () => {
+    if (!otherUserId) {
+      Alert.alert('Please wait', 'Still loading this conversation. Try again in a moment.');
+      return;
+    }
+    confirmBlockUser({
+      uid: otherUserId,
+      name: otherUser.name,
+      onBlocked: () => navigation.goBack(),
+    });
+  };
+
+  const handleUnblock = () => {
+    if (!otherUserId) return;
+    Alert.alert(
+      `Unblock ${otherUser.name}?`,
+      'You will see their messages again, and they will be able to send you message requests.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Unblock',
+          onPress: () => {
+            unblockUser(otherUserId).catch(error => {
+              logger.error('Error unblocking user:', error);
+              Alert.alert('Could not unblock', 'Something went wrong. Please check your connection and try again.');
+            });
+          },
+        },
+      ]
+    );
+  };
+
+  const handleMenu = () => {
+    Alert.alert(otherUser.name, undefined, [
+      { text: 'Report', onPress: handleReportConversation },
+      isBlocked
+        ? { text: 'Unblock', onPress: handleUnblock }
+        : { text: 'Block', style: 'destructive' as const, onPress: handleBlock },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+
+  const handleMessageLongPress = (item: DirectMessage) => {
+    if (item.senderId === user?.id) return;
+    Alert.alert('Message', undefined, [
+      {
+        text: 'Report',
+        onPress: () =>
+          reportContent({
+            contentType: 'direct_message',
+            contentId: item.id,
+            reportedUserId: item.senderId,
+            reportedUserName: item.senderName || otherUser.name,
+            excerpt: item.imageUrl ? `[Photo] ${item.text || ''}` : item.text,
+          }),
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+
   const renderMessage = ({ item }: { item: DirectMessage }) => {
     const isMyMessage = item.senderId === user?.id;
     const showSenderName = !isMyMessage;
 
     return (
-      <View style={[
+      <TouchableOpacity
+        activeOpacity={0.8}
+        onLongPress={() => handleMessageLongPress(item)}
+        disabled={isMyMessage}
+        accessibilityHint={isMyMessage ? undefined : 'Long press to report this message'}
+        style={[
         styles.messageContainer,
         isMyMessage ? styles.myMessageContainer : styles.theirMessageContainer
       ]}>
@@ -263,7 +377,7 @@ export const DirectMessageChatScreen: React.FC<DirectMessageChatScreenProps> = (
             {item.timestamp.toLocaleDateString([], { month: 'short', day: 'numeric' })} at {item.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           </Text>
         </View>
-      </View>
+      </TouchableOpacity>
     );
   };
 
@@ -294,16 +408,35 @@ export const DirectMessageChatScreen: React.FC<DirectMessageChatScreenProps> = (
             )}
           </View>
 
-          <View style={{ width: 24 }} />
+          <TouchableOpacity
+            onPress={handleMenu}
+            style={styles.backButton}
+            accessibilityRole="button"
+            accessibilityLabel={`Report or block ${otherUser.name}`}
+          >
+            <MaterialCommunityIcons name="dots-vertical" size={24} color={theme.colors.textPrimary} />
+          </TouchableOpacity>
         </View>
+
+        {isBlocked && (
+          <View style={styles.blockedNotice}>
+            <MaterialCommunityIcons name="account-cancel" size={18} color={theme.colors.textSecondary} />
+            <Text style={styles.blockedNoticeText}>
+              You blocked {otherUser.name}. Their messages are hidden.
+            </Text>
+            <TouchableOpacity onPress={handleUnblock}>
+              <Text style={styles.blockedNoticeAction}>Unblock</Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
         {/* Messages List */}
         <FlatList
           ref={flatListRef}
-          data={messages}
+          data={visibleMessages}
           renderItem={renderMessage}
           keyExtractor={item => item.id}
-          extraData={messages}
+          extraData={visibleMessages}
           inverted
           contentContainerStyle={styles.messagesList}
           ListEmptyComponent={
@@ -317,7 +450,11 @@ export const DirectMessageChatScreen: React.FC<DirectMessageChatScreenProps> = (
 
         {/* Input Area */}
         <View style={styles.inputContainer}>
-          {uploadingImage ? (
+          {isBlocked ? (
+            <Text style={styles.blockedComposerText}>Unblock {otherUser.name} to send messages.</Text>
+          ) : blockedByOther ? (
+            <Text style={styles.blockedComposerText}>You can't send messages in this conversation.</Text>
+          ) : uploadingImage ? (
             <View style={styles.uploadingContainer}>
               <ActivityIndicator size="small" color={theme.colors.primary} />
               <Text style={styles.uploadingText}>Sending photo...</Text>
@@ -534,5 +671,32 @@ const styles = StyleSheet.create({
   uploadingText: {
     fontSize: 15,
     color: theme.colors.textSecondary,
+  },
+  blockedNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: theme.spacing.m,
+    paddingVertical: 10,
+    backgroundColor: theme.colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+  },
+  blockedNoticeText: {
+    flex: 1,
+    fontSize: 13,
+    color: theme.colors.textSecondary,
+  },
+  blockedNoticeAction: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: theme.colors.primary,
+  },
+  blockedComposerText: {
+    flex: 1,
+    textAlign: 'center',
+    fontSize: 14,
+    color: theme.colors.textSecondary,
+    paddingVertical: 12,
   },
 });

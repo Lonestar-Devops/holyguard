@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, FlatList, ActivityIndicator, Alert } from 'react-native';
 import { logger } from '../utils/logger';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -6,7 +6,8 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { theme } from '../theme';
 import { useAuth } from '../context/AuthContext';
 import { db } from '../config/firebase';
-import { collection, query, where, orderBy, onSnapshot, doc, updateDoc, addDoc, serverTimestamp, getDocs } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, doc, updateDoc, addDoc, serverTimestamp, getDocs } from 'firebase/firestore';
+import { confirmBlockUser, reportContent, useBlockedUsers } from '../utils/moderation';
 
 interface Conversation {
   id: string;
@@ -43,15 +44,26 @@ interface DMInvite {
 
 interface DirectMessagesScreenProps {
   navigation: any;
+  route?: any;
 }
 
-export const DirectMessagesScreen: React.FC<DirectMessagesScreenProps> = ({ navigation }) => {
+export const DirectMessagesScreen: React.FC<DirectMessagesScreenProps> = ({ navigation, route }) => {
   const { user } = useAuth();
+  const { blocked, loading: blockedLoading } = useBlockedUsers();
   const [activeTab, setActiveTab] = useState<'messages' | 'invites'>('messages');
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [receivedInvites, setReceivedInvites] = useState<DMInvite[]>([]);
   const [sentInvites, setSentInvites] = useState<DMInvite[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // 'View Invite' in the user directory opens this screen on the Invites tab.
+  const requestedTab = route?.params?.activeTab;
+  useEffect(() => {
+    if (requestedTab === 'invites' || requestedTab === 'messages') {
+      setActiveTab(requestedTab);
+      navigation.setParams?.({ activeTab: undefined });
+    }
+  }, [requestedTab]);
 
   useEffect(() => {
     if (!user?.id) return;
@@ -101,6 +113,8 @@ export const DirectMessagesScreen: React.FC<DirectMessagesScreenProps> = ({ navi
         createdAt: doc.data().createdAt?.toDate() || new Date(),
       } as DMInvite));
       setReceivedInvites(invites);
+    }, (error) => {
+      logger.error('Error loading received invites:', error);
     });
 
     // Sent invites
@@ -117,6 +131,8 @@ export const DirectMessagesScreen: React.FC<DirectMessagesScreenProps> = ({ navi
         createdAt: doc.data().createdAt?.toDate() || new Date(),
       } as DMInvite));
       setSentInvites(invites);
+    }, (error) => {
+      logger.error('Error loading sent invites:', error);
     });
 
     return () => {
@@ -125,10 +141,31 @@ export const DirectMessagesScreen: React.FC<DirectMessagesScreenProps> = ({ navi
     };
   }, [user?.id]);
 
+  const getOtherUserId = (conversation: Conversation) =>
+    conversation.participants.find(id => id !== user?.id) || null;
+
   const getOtherUser = (conversation: Conversation) => {
-    const otherUserId = conversation.participants.find(id => id !== user?.id);
+    const otherUserId = getOtherUserId(conversation);
     return otherUserId ? conversation.participantDetails[otherUserId] : null;
   };
+
+  // Conversations and requests involving someone the caller blocked are hidden.
+  const visibleConversations = useMemo(
+    () => conversations.filter(c => {
+      const otherUserId = c.participants.find(id => id !== user?.id);
+      return !otherUserId || !blocked.has(otherUserId);
+    }),
+    [conversations, blocked, user?.id]
+  );
+  const visibleReceivedInvites = useMemo(
+    () => receivedInvites.filter(invite => !blocked.has(invite.fromUserId)),
+    [receivedInvites, blocked]
+  );
+  const visibleSentInvites = useMemo(
+    () => sentInvites.filter(invite => !blocked.has(invite.toUserId)),
+    [sentInvites, blocked]
+  );
+  const inviteCount = visibleReceivedInvites.length + visibleSentInvites.length;
 
   const getTimeAgo = (date: Date) => {
     const now = new Date();
@@ -156,7 +193,13 @@ export const DirectMessagesScreen: React.FC<DirectMessagesScreenProps> = ({ navi
       );
 
       if (existingConv) {
-        Alert.alert('Info', 'Conversation already exists');
+        // Clear the request too, so it doesn't sit in Received forever.
+        await updateDoc(doc(db, 'dm_invites', invite.id), {
+          status: 'accepted',
+          updatedAt: serverTimestamp(),
+        });
+        Alert.alert('Already connected', `You already have a conversation with ${invite.fromUserDetails.name}.`);
+        setActiveTab('messages');
         return;
       }
 
@@ -214,9 +257,43 @@ export const DirectMessagesScreen: React.FC<DirectMessagesScreenProps> = ({ navi
     );
   };
 
+  const handleInviteActions = (invite: DMInvite) => {
+    const name = invite.fromUserDetails?.name || 'this user';
+    Alert.alert(name, 'Message request', [
+      {
+        text: 'Report',
+        onPress: () =>
+          reportContent({
+            contentType: 'user',
+            reportedUserId: invite.fromUserId,
+            reportedUserName: invite.fromUserDetails?.name,
+            excerpt: `Message request dm_invites/${invite.id}`,
+          }),
+      },
+      {
+        text: 'Block',
+        style: 'destructive',
+        onPress: () =>
+          confirmBlockUser({
+            uid: invite.fromUserId,
+            name: invite.fromUserDetails?.name,
+            // Also decline the request so it doesn't come back after an unblock.
+            onBlocked: () => {
+              updateDoc(doc(db, 'dm_invites', invite.id), {
+                status: 'declined',
+                updatedAt: serverTimestamp(),
+              }).catch(error => logger.error('Error declining blocked invite:', error));
+            },
+          }),
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+
   const renderConversation = ({ item }: { item: Conversation }) => {
     const otherUser = getOtherUser(item);
     if (!otherUser) return null;
+    const otherUserId = getOtherUserId(item);
 
     const isDifferentOrg = otherUser.organizationId !== user?.organizationId;
     const isFromMe = item.lastMessageSenderId === user?.id;
@@ -224,9 +301,10 @@ export const DirectMessagesScreen: React.FC<DirectMessagesScreenProps> = ({ navi
     return (
       <TouchableOpacity
         style={styles.conversationItem}
-        onPress={() => navigation.navigate('DirectMessageChat', { 
+        onPress={() => navigation.navigate('DirectMessageChat', {
           conversationId: item.id,
-          otherUser: otherUser 
+          otherUserId,
+          otherUser: otherUser
         })}
       >
         <View style={styles.avatarContainer}>
@@ -282,6 +360,14 @@ export const DirectMessagesScreen: React.FC<DirectMessagesScreenProps> = ({ navi
         {type === 'received' ? (
           <View style={styles.inviteActions}>
             <TouchableOpacity
+              style={styles.moreButton}
+              onPress={() => handleInviteActions(item)}
+              accessibilityRole="button"
+              accessibilityLabel={`Report or block ${otherUser.name}`}
+            >
+              <MaterialCommunityIcons name="dots-horizontal" size={20} color={theme.colors.textSecondary} />
+            </TouchableOpacity>
+            <TouchableOpacity
               style={styles.acceptButton}
               onPress={() => handleAcceptInvite(item)}
             >
@@ -303,7 +389,8 @@ export const DirectMessagesScreen: React.FC<DirectMessagesScreenProps> = ({ navi
     );
   };
 
-  if (loading) {
+  // Wait for the block list too, so a blocked user's conversation never flashes in.
+  if (loading || blockedLoading) {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.header}>
@@ -344,15 +431,15 @@ export const DirectMessagesScreen: React.FC<DirectMessagesScreenProps> = ({ navi
         >
           <Text style={[styles.tabText, activeTab === 'invites' && styles.activeTabText]}>
             Invites
-            {(receivedInvites.length + sentInvites.length) > 0 && (
-              <Text style={styles.inviteBadge}> {receivedInvites.length + sentInvites.length}</Text>
+            {inviteCount > 0 && (
+              <Text style={styles.inviteBadge}> {inviteCount}</Text>
             )}
           </Text>
         </TouchableOpacity>
       </View>
 
       {activeTab === 'messages' ? (
-        conversations.length === 0 ? (
+        visibleConversations.length === 0 ? (
           <View style={styles.emptyState}>
             <MaterialCommunityIcons name="message-text-outline" size={80} color={theme.colors.gray} />
             <Text style={styles.emptyTitle}>No messages yet</Text>
@@ -369,7 +456,7 @@ export const DirectMessagesScreen: React.FC<DirectMessagesScreenProps> = ({ navi
           </View>
         ) : (
           <FlatList
-            data={conversations}
+            data={visibleConversations}
             renderItem={renderConversation}
             keyExtractor={item => item.id}
             contentContainerStyle={styles.conversationList}
@@ -377,29 +464,29 @@ export const DirectMessagesScreen: React.FC<DirectMessagesScreenProps> = ({ navi
         )
       ) : (
         <View style={styles.invitesContainer}>
-          {receivedInvites.length > 0 && (
+          {visibleReceivedInvites.length > 0 && (
             <View>
               <Text style={styles.invitesSectionTitle}>RECEIVED</Text>
               <FlatList
-                data={receivedInvites}
+                data={visibleReceivedInvites}
                 renderItem={({ item }) => renderInvite({ item, type: 'received' })}
                 keyExtractor={item => item.id}
               />
             </View>
           )}
           
-          {sentInvites.length > 0 && (
-            <View style={{ marginTop: receivedInvites.length > 0 ? 20 : 0 }}>
+          {visibleSentInvites.length > 0 && (
+            <View style={{ marginTop: visibleReceivedInvites.length > 0 ? 20 : 0 }}>
               <Text style={styles.invitesSectionTitle}>SENT</Text>
               <FlatList
-                data={sentInvites}
+                data={visibleSentInvites}
                 renderItem={({ item }) => renderInvite({ item, type: 'sent' })}
                 keyExtractor={item => item.id}
               />
             </View>
           )}
 
-          {receivedInvites.length === 0 && sentInvites.length === 0 && (
+          {inviteCount === 0 && (
             <View style={styles.emptyState}>
               <MaterialCommunityIcons name="account-multiple-outline" size={80} color={theme.colors.gray} />
               <Text style={styles.emptyTitle}>No invites</Text>
@@ -584,6 +671,15 @@ const styles = StyleSheet.create({
   inviteActions: {
     flexDirection: 'row',
     gap: 8,
+  },
+  moreButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: theme.colors.borderStrong,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   acceptButton: {
     backgroundColor: theme.colors.success,

@@ -1,19 +1,78 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Alert, TextInput, ActivityIndicator, ScrollView, Modal, KeyboardAvoidingView, Platform, Image, Animated } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Alert, TextInput, ActivityIndicator, ScrollView, Modal, KeyboardAvoidingView, Platform, Image, Linking } from 'react-native';
+import Constants from 'expo-constants';
 import { logger } from '../utils/logger';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { theme } from '../theme';
 import { useAuth } from '../context/AuthContext';
 import { auth, db } from '../config/firebase';
-import { updatePassword, reauthenticateWithCredential, EmailAuthProvider, deleteUser } from 'firebase/auth';
-import { doc, deleteDoc, getDoc, updateDoc, query, collection, where, getDocs } from 'firebase/firestore';
+import { updatePassword, reauthenticateWithCredential, EmailAuthProvider } from 'firebase/auth';
+import { doc, getDoc, updateDoc, query, collection, where, getDocs } from 'firebase/firestore';
 import { GooglePlacesAutocomplete } from 'react-native-google-places-autocomplete';
 import { GOOGLE_PLACES_API_KEY } from '../config/keys';
+import { DeleteAccountModal } from '../components/DeleteAccountModal';
+import { SUPPORT_EMAIL, SUPPORT_MAILTO, PRIVACY_URL, TERMS_URL } from '../constants/links';
 
 interface SettingsScreenProps {
   navigation: any;
 }
+
+// The org's stored location when it can be saved back as is (the rules take only numbers in range).
+const savedCoordinates = (org: any) =>
+  Number.isFinite(org?.latitude) && Number.isFinite(org?.longitude) &&
+  Math.abs(org.latitude) <= 90 && Math.abs(org.longitude) <= 180
+    ? { latitude: org.latitude as number, longitude: org.longitude as number }
+    : null;
+
+// Marketing version from the app config, build number from the installed binary's
+// CFBundleVersion (falls back to the config value where the native one isn't available).
+// Android has no native build number here, so it uses the config's versionCode.
+const APP_VERSION = Constants.expoConfig?.version ?? '';
+const ANDROID_VERSION_CODE = Constants.expoConfig?.android?.versionCode;
+const BUILD_NUMBER =
+  Platform.OS === 'ios'
+    ? Constants.platform?.ios?.buildNumber ?? Constants.expoConfig?.ios?.buildNumber ?? null
+    : ANDROID_VERSION_CODE != null
+      ? String(ANDROID_VERSION_CODE)
+      : null;
+const VERSION_LABEL = APP_VERSION
+  ? `Version ${APP_VERSION}${BUILD_NUMBER ? ` (${BUILD_NUMBER})` : ''}`
+  : null;
+
+// Friendly text for the Firebase Auth errors Change Password can hit. Firebase JS 12 reports a
+// mistyped current password as auth/invalid-credential when email enumeration protection is on,
+// and as auth/wrong-password otherwise.
+const changePasswordErrorMessage = (code: string | undefined): string => {
+  switch (code) {
+    case 'auth/invalid-credential':
+    case 'auth/wrong-password':
+    case 'auth/invalid-login-credentials':
+      return 'Your current password is incorrect. Please try again.';
+    case 'auth/too-many-requests':
+      return 'Too many attempts. Please wait a few minutes and try again.';
+    case 'auth/weak-password':
+    case 'auth/password-does-not-meet-requirements':
+      return 'Your new password is too weak. Please choose a longer or more complex password.';
+    case 'auth/network-request-failed':
+      return "Couldn't reach the server. Check your connection and try again.";
+    case 'auth/requires-recent-login':
+    case 'auth/user-token-expired':
+    case 'auth/user-mismatch':
+      return 'Your session has expired. Please sign out, sign back in, and try again.';
+    default:
+      return "Couldn't update your password. Please try again.";
+  }
+};
+
+const openExternal = async (url: string, fallbackTitle: string, fallbackMessage: string) => {
+  try {
+    await Linking.openURL(url);
+  } catch (error) {
+    logger.warn('Could not open link:', url, error);
+    Alert.alert(fallbackTitle, fallbackMessage);
+  }
+};
 
 export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) => {
   const { user, logout } = useAuth();
@@ -30,56 +89,12 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
   const [orgCoordinates, setOrgCoordinates] = useState<{ latitude: number; longitude: number } | null>(null);
   const [currentOrg, setCurrentOrg] = useState<any>(null);
   const [loadingOrg, setLoadingOrg] = useState(false);
+  const [orgLoadError, setOrgLoadError] = useState<'missing' | 'failed' | null>(null);
+  const [placesError, setPlacesError] = useState<string | null>(null);
   const placesRef = useRef<any>(null);
 
-  // Demo mode state
-  const [showDemoModal, setShowDemoModal] = useState(false);
-  const [demoPassword, setDemoPassword] = useState('');
-  const [demoError, setDemoError] = useState('');
-  const [secretMode, setSecretMode] = useState<'menu' | 'demo'>('menu');
-  const tapCountRef = useRef(0);
-  const lastTapTimeRef = useRef(0);
-  const shakeAnim = useRef(new Animated.Value(0)).current;
-
-  const handleTitleTap = () => {
-    const now = Date.now();
-    if (now - lastTapTimeRef.current < 500) {
-      tapCountRef.current += 1;
-    } else {
-      tapCountRef.current = 1;
-    }
-    lastTapTimeRef.current = now;
-
-    if (tapCountRef.current >= 3) {
-      tapCountRef.current = 0;
-      setShowDemoModal(true);
-      setSecretMode('menu');
-      setDemoPassword('');
-      setDemoError('');
-    }
-  };
-
-  const shakeInput = () => {
-    Animated.sequence([
-      Animated.timing(shakeAnim, { toValue: 10, duration: 50, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: -10, duration: 50, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: 10, duration: 50, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: 0, duration: 50, useNativeDriver: true }),
-    ]).start();
-  };
-
-  const handleDemoSubmit = () => {
-    if (demoPassword === 'HG#Platform2026!') {
-      setShowDemoModal(false);
-      setDemoPassword('');
-      setDemoError('');
-      navigation.navigate('DemoSelector');
-    } else {
-      setDemoError('Invalid code');
-      setDemoPassword('');
-      shakeInput();
-    }
-  };
+  // Delete Account (the modal owns the whole flow, including sign-out on success)
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
 
   // Load organization on mount
   useEffect(() => {
@@ -91,16 +106,16 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
     if (showOrgModal && currentOrg) {
       setOrgName(currentOrg.name || '');
       setOrgAddress(currentOrg.address || '');
-      setOrgCoordinates(currentOrg.latitude && currentOrg.longitude ? {
-        latitude: currentOrg.latitude,
-        longitude: currentOrg.longitude,
-      } : null);
+      setOrgCoordinates(savedCoordinates(currentOrg));
+      setPlacesError(null);
+      placesRef.current?.setAddressText(currentOrg.address || '');
     }
   }, [showOrgModal]);
 
   const loadOrganization = async () => {
     if (!user?.organizationId) return;
-    
+    setOrgLoadError(null);
+
     try {
       // Try to get by document ID first
       let orgDoc = await getDoc(doc(db, 'organizations', user.organizationId));
@@ -119,12 +134,17 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
       
       if (orgDoc.exists()) {
         const orgData = orgDoc.data();
-        setCurrentOrg({ id: orgDoc.id, ...orgData });
+        // The doc id goes last: an app-created org's `id` field ('org_<ms>') is not its doc
+        // id, and Update Organization writes to organizations/<currentOrg.id>.
+        setCurrentOrg({ ...orgData, id: orgDoc.id });
         setOrgName(orgData.name || '');
         setOrgAddress(orgData.address || '');
+      } else {
+        setOrgLoadError('missing');
       }
     } catch (error) {
       logger.error('Error loading organization:', error);
+      setOrgLoadError('failed');
     }
   };
 
@@ -138,7 +158,18 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
       Alert.alert('Error', 'Please select an address from the dropdown');
       return;
     }
-    
+
+    // The rules check the whole saved doc, so an older org's over-long name or address
+    // would block every save with a permission error.
+    if (orgName.trim().length > 100) {
+      Alert.alert('Error', 'Organization name must be 100 characters or fewer.');
+      return;
+    }
+    if (orgAddress.length > 300) {
+      Alert.alert('Error', 'Please choose the address from the list again.');
+      return;
+    }
+
     setLoadingOrg(true);
     try {
       if (!currentOrg) throw new Error('Organization not found');
@@ -155,7 +186,9 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
       setShowOrgModal(false);
       await loadOrganization(); // Reload
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to update organization');
+      Alert.alert('Error', error?.code === 'permission-denied'
+        ? "Your account isn't allowed to update this organization. Contact support if you are its admin."
+        : error.message || 'Failed to update organization');
     } finally {
       setLoadingOrg(false);
     }
@@ -181,7 +214,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
     try {
       const currentUser = auth.currentUser;
       if (!currentUser || !currentUser.email) {
-        throw new Error('Not authenticated');
+        Alert.alert('Error', 'Your session has expired. Please sign out, sign back in, and try again.');
+        return;
       }
 
       // Reauthenticate user
@@ -197,103 +231,21 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
       setNewPassword('');
       setConfirmPassword('');
     } catch (error: any) {
-      if (error.code === 'auth/wrong-password') {
-        Alert.alert('Error', 'Current password is incorrect');
-      } else if (error.code === 'auth/weak-password') {
-        Alert.alert('Error', 'New password is too weak');
-      } else {
-        Alert.alert('Error', error.message || 'Failed to update password');
-      }
+      logger.warn('Change password failed:', error?.code);
+      Alert.alert('Error', changePasswordErrorMessage(error?.code));
     } finally {
       setLoading(false);
     }
   };
 
-  const handleDeleteAccount = () => {
-    Alert.alert(
-      'Delete Account',
-      'Are you sure you want to delete your account? This action cannot be undone. All your data will be permanently deleted.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: () => confirmDeleteAccount(),
-        },
-      ]
-    );
-  };
+  const handleContactSupport = () =>
+    openExternal(SUPPORT_MAILTO, 'Contact Support', `Email us at ${SUPPORT_EMAIL}`);
 
-  const confirmDeleteAccount = () => {
-    Alert.alert(
-      'Final Confirmation',
-      'This will permanently delete your account and all associated data. Are you absolutely sure?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Yes, Delete My Account',
-          style: 'destructive',
-          onPress: () => executeDeleteAccount(),
-        },
-      ]
-    );
-  };
+  const handleOpenPrivacyPolicy = () =>
+    openExternal(PRIVACY_URL, 'Privacy Policy', `Read our Privacy Policy at ${PRIVACY_URL}`);
 
-  const executeDeleteAccount = async () => {
-    setLoading(true);
-    try {
-      const currentUser = auth.currentUser;
-      if (!currentUser || !user) {
-        throw new Error('Not authenticated');
-      }
-
-      const uid = currentUser.uid;
-
-      // Cascade delete: remove all user-owned data across collections
-      const collectionsToClean = [
-        { name: 'alerts', field: 'reporterId' },
-        { name: 'team_messages', field: 'senderId' },
-        { name: 'watchlist', field: 'createdBy' },
-        { name: 'resources', field: 'postedBy' },
-        { name: 'direct_messages', field: 'senderId' },
-        { name: 'invite_codes', field: 'createdBy' },
-      ];
-
-      for (const { name, field } of collectionsToClean) {
-        const q = query(collection(db, name), where(field, '==', uid));
-        const snap = await getDocs(q);
-        for (const docSnap of snap.docs) {
-          await deleteDoc(docSnap.ref);
-        }
-      }
-
-      // Delete conversations where user is a participant
-      const convsQuery = query(collection(db, 'conversations'), where('participants', 'array-contains', uid));
-      const convsSnap = await getDocs(convsQuery);
-      for (const docSnap of convsSnap.docs) {
-        await deleteDoc(docSnap.ref);
-      }
-
-      // Delete Firestore user document
-      await deleteDoc(doc(db, 'users', uid));
-
-      // Delete Firebase Auth account (must be last — after this, user loses access)
-      await deleteUser(currentUser);
-
-      Alert.alert('Account Deleted', 'Your account has been permanently deleted.');
-    } catch (error: any) {
-      if (error.code === 'auth/requires-recent-login') {
-        Alert.alert(
-          'Re-authentication Required',
-          'For security reasons, please log out and log back in before deleting your account.'
-        );
-      } else {
-        Alert.alert('Error', error.message || 'Failed to delete account');
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
+  const handleOpenTerms = () =>
+    openExternal(TERMS_URL, 'Terms of Use', `Read our Terms of Use at ${TERMS_URL}`);
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -305,7 +257,13 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
         <View style={styles.backButton} />
       </View>
 
-      <ScrollView style={styles.content}>
+      {/* The keyboard would otherwise cover the lower Change Password fields and swallow the
+          first tap on Update Password. */}
+      <ScrollView
+        style={styles.content}
+        keyboardShouldPersistTaps="handled"
+        automaticallyAdjustKeyboardInsets
+      >
         {/* User Info Section */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>ACCOUNT</Text>
@@ -390,13 +348,22 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
                 disabled={loading}
               >
                 {loading ? (
-                  <ActivityIndicator color={theme.colors.white} />
+                  <ActivityIndicator color={theme.colors.textPrimary} />
                 ) : (
                   <Text style={styles.updateButtonText}>UPDATE PASSWORD</Text>
                 )}
               </TouchableOpacity>
             </View>
           )}
+
+          <TouchableOpacity
+            style={styles.settingsButton}
+            onPress={() => navigation.navigate('BlockedUsers')}
+          >
+            <MaterialCommunityIcons name="account-cancel" size={24} color={theme.colors.primary} />
+            <Text style={styles.settingsButtonText}>Blocked Users</Text>
+            <MaterialCommunityIcons name="chevron-right" size={24} color={theme.colors.gray} />
+          </TouchableOpacity>
         </View>
 
         {/* Danger Zone */}
@@ -404,7 +371,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
           <Text style={styles.sectionTitle}>DANGER ZONE</Text>
           <TouchableOpacity
             style={styles.deleteButton}
-            onPress={handleDeleteAccount}
+            onPress={() => setShowDeleteModal(true)}
             disabled={loading}
           >
             <MaterialCommunityIcons name="delete-forever" size={24} color={theme.colors.danger} />
@@ -431,13 +398,15 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
                   {currentOrg.address || 'N/A'}
                 </Text>
               </View>
-              <TouchableOpacity
-                style={styles.updateOrgButton}
-                onPress={() => setShowOrgModal(true)}
-              >
-                <MaterialCommunityIcons name="map-marker-edit" size={20} color={theme.colors.primary} />
-                <Text style={styles.updateOrgButtonText}>Update Organization</Text>
-              </TouchableOpacity>
+              {(user?.role === 'admin' || user?.role === 'super_admin') && (
+                <TouchableOpacity
+                  style={styles.updateOrgButton}
+                  onPress={() => setShowOrgModal(true)}
+                >
+                  <MaterialCommunityIcons name="map-marker-edit" size={20} color={theme.colors.primary} />
+                  <Text style={styles.updateOrgButtonText}>Update Organization</Text>
+                </TouchableOpacity>
+              )}
               {(user?.role === 'admin' || user?.role === 'super_admin') && (
                 <TouchableOpacity
                   style={styles.updateOrgButton}
@@ -457,6 +426,20 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
                 </TouchableOpacity>
               )}
             </View>
+          ) : orgLoadError ? (
+            <View style={styles.infoCard}>
+              <Text style={styles.orgLoadErrorText}>
+                {orgLoadError === 'missing'
+                  ? "Your account isn't linked to an organization."
+                  : "Couldn't load your organization."}
+              </Text>
+              {orgLoadError === 'failed' && (
+                <TouchableOpacity style={styles.updateOrgButton} onPress={loadOrganization}>
+                  <MaterialCommunityIcons name="refresh" size={20} color={theme.colors.primary} />
+                  <Text style={styles.updateOrgButtonText}>Retry</Text>
+                </TouchableOpacity>
+              )}
+            </View>
           ) : (
             <ActivityIndicator size="small" color={theme.colors.primary} />
           )}
@@ -465,13 +448,27 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
         {/* About Section */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>ABOUT</Text>
-          <View style={styles.aboutCard}>
-            <TouchableOpacity activeOpacity={1} onPress={handleTitleTap}>
-              <Text style={styles.appTitle}>HolyGuard</Text>
-            </TouchableOpacity>
+          <TouchableOpacity style={styles.settingsButton} onPress={handleContactSupport}>
+            <MaterialCommunityIcons name="email-outline" size={24} color={theme.colors.primary} />
+            <Text style={styles.settingsButtonText}>Contact Support</Text>
+            <MaterialCommunityIcons name="chevron-right" size={24} color={theme.colors.gray} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.settingsButton} onPress={handleOpenPrivacyPolicy}>
+            <MaterialCommunityIcons name="shield-lock-outline" size={24} color={theme.colors.primary} />
+            <Text style={styles.settingsButtonText}>Privacy Policy</Text>
+            <MaterialCommunityIcons name="open-in-new" size={20} color={theme.colors.gray} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.settingsButton} onPress={handleOpenTerms}>
+            <MaterialCommunityIcons name="file-document-outline" size={24} color={theme.colors.primary} />
+            <Text style={styles.settingsButtonText}>Terms of Use</Text>
+            <MaterialCommunityIcons name="open-in-new" size={20} color={theme.colors.gray} />
+          </TouchableOpacity>
+
+          <View style={[styles.aboutCard, styles.aboutCardSpaced]}>
+            <Text style={styles.appTitle}>HolyGuard</Text>
             <Text style={styles.appTagline}>Security Network Application</Text>
-            <Text style={styles.appVersion}>Version 1.0.0</Text>
-            
+            {VERSION_LABEL ? <Text style={styles.appVersion}>{VERSION_LABEL}</Text> : null}
+
             <View style={styles.sponsorSection}>
               <Text style={styles.sponsorLabel}>Developed By</Text>
               <View style={styles.sponsorLogosLarge}>
@@ -494,68 +491,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
         </TouchableOpacity>
       </ScrollView>
 
-      {/* Secret Access Modal */}
-      <Modal
-        visible={showDemoModal}
-        animationType="fade"
-        transparent={true}
-        onRequestClose={() => setShowDemoModal(false)}
-      >
-        <View style={styles.demoOverlay}>
-          <Animated.View style={[styles.demoModalBox, { transform: [{ translateX: shakeAnim }] }]}>
-            {secretMode === 'menu' ? (
-              <>
-                <Text style={styles.demoModalTitle}>Admin Access</Text>
-                <TouchableOpacity
-                  style={styles.secretMenuButton}
-                  onPress={() => { setSecretMode('demo'); setDemoPassword(''); setDemoError(''); }}
-                >
-                  <MaterialCommunityIcons name="monitor-eye" size={20} color={theme.colors.primary} />
-                  <Text style={styles.secretMenuButtonText}>Demo Mode</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.demoCancelButton, { marginTop: 16 }]}
-                  onPress={() => setShowDemoModal(false)}
-                >
-                  <Text style={styles.demoCancelText}>Cancel</Text>
-                </TouchableOpacity>
-              </>
-            ) : (
-              <>
-                <Text style={styles.demoModalTitle}>Enter Access Code</Text>
-                <TextInput
-                  style={styles.demoModalInput}
-                  value={demoPassword}
-                  onChangeText={(text) => {
-                    setDemoPassword(text);
-                    setDemoError('');
-                  }}
-                  placeholder="Access code"
-                  placeholderTextColor="#999"
-                  secureTextEntry
-                  autoCapitalize="none"
-                  autoFocus
-                  onSubmitEditing={handleDemoSubmit}
-                />
-                {demoError !== '' && (
-                  <Text style={styles.demoErrorText}>{demoError}</Text>
-                )}
-                <View style={styles.demoModalButtons}>
-                  <TouchableOpacity
-                    style={styles.demoCancelButton}
-                    onPress={() => setSecretMode('menu')}
-                  >
-                    <Text style={styles.demoCancelText}>Back</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.demoSubmitButton} onPress={handleDemoSubmit}>
-                    <Text style={styles.demoSubmitText}>Submit</Text>
-                  </TouchableOpacity>
-                </View>
-              </>
-            )}
-          </Animated.View>
-        </View>
-      </Modal>
+      <DeleteAccountModal visible={showDeleteModal} onClose={() => setShowDeleteModal(false)} />
 
       {/* Organization Update Modal */}
       <Modal
@@ -593,6 +529,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
               onChangeText={setOrgName}
               placeholder="Enter organization name"
               placeholderTextColor="#999"
+              maxLength={100}
             />
 
             <Text style={[styles.modalLabel, { marginTop: 20 }]}>Organization Address</Text>
@@ -601,22 +538,41 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
                 ref={placesRef}
                 placeholder="Search for address"
                 onPress={(data, details = null) => {
-                  if (details) {
-                    setOrgAddress(data.description);
-                    setOrgCoordinates({
-                      latitude: details.geometry.location.lat,
-                      longitude: details.geometry.location.lng,
-                    });
+                  const location = details?.geometry?.location;
+                  if (!location) {
+                    setPlacesError("Couldn't look up that address. Please choose it again.");
+                    return;
                   }
+                  setPlacesError(null);
+                  setOrgAddress(data.description);
+                  setOrgCoordinates({ latitude: location.lat, longitude: location.lng });
                 }}
+                onFail={() => setPlacesError("Address search isn't working right now. Please try again later.")}
+                onNotFound={() => setPlacesError("Couldn't find that address. Please choose another one.")}
+                onTimeout={() => setPlacesError('Address search timed out. Please try again.')}
                 query={{
                   key: GOOGLE_PLACES_API_KEY,
                   language: 'en',
                 }}
+                GooglePlacesDetailsQuery={{ fields: 'geometry' }}
                 fetchDetails={true}
+                minLength={2}
+                debounce={200}
                 enablePoweredByContainer={false}
                 textInputProps={{
                   placeholderTextColor: '#999',
+                  // Typed text counts only once it's picked from the list. Until then the saved
+                  // location is dropped, so the old address can't be saved as if it were the
+                  // new one. Clearing the field, or retyping the saved address, keeps it.
+                  onChangeText: (text: string) => {
+                    setPlacesError(null);
+                    if (!text.trim() || text === (currentOrg?.address || '')) {
+                      setOrgAddress(currentOrg?.address || '');
+                      setOrgCoordinates(savedCoordinates(currentOrg));
+                    } else if (text !== orgAddress) {
+                      setOrgCoordinates(null);
+                    }
+                  },
                 }}
                 styles={{
                   container: {
@@ -658,20 +614,28 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ navigation }) =>
               />
             </View>
 
-            {orgAddress && (
+            {placesError ? (
+              <Text style={styles.addressErrorText}>{placesError}</Text>
+            ) : !orgAddress || !orgCoordinates ? (
+              <Text style={styles.addressHintText}>
+                Choose the address from the list to use it. If no list appears, check your connection and try again.
+              </Text>
+            ) : null}
+
+            {orgAddress && orgCoordinates ? (
               <View style={styles.selectedAddressContainer}>
                 <MaterialCommunityIcons name="map-marker" size={20} color={theme.colors.primary} />
                 <Text style={styles.selectedAddressText}>{orgAddress}</Text>
               </View>
-            )}
+            ) : null}
 
             <TouchableOpacity
-              style={[styles.modalButton, (!orgName || !orgAddress || loadingOrg) && styles.modalButtonDisabled]}
+              style={[styles.modalButton, (!orgName.trim() || !orgAddress || !orgCoordinates || loadingOrg) && styles.modalButtonDisabled]}
               onPress={handleUpdateOrganization}
-              disabled={!orgName || !orgAddress || loadingOrg}
+              disabled={!orgName.trim() || !orgAddress || !orgCoordinates || loadingOrg}
             >
               {loadingOrg ? (
-                <ActivityIndicator color="#fff" />
+                <ActivityIndicator color={theme.colors.textPrimary} />
               ) : (
                 <Text style={styles.modalButtonText}>Update Organization</Text>
               )}
@@ -772,6 +736,7 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.white,
     borderRadius: 8,
     padding: theme.spacing.m,
+    marginBottom: 8,
   },
   cardHeader: {
     flexDirection: 'row',
@@ -857,6 +822,9 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     padding: theme.spacing.l,
     alignItems: 'center',
+  },
+  aboutCardSpaced: {
+    marginTop: 8,
   },
   appTitle: {
     fontSize: 28,
@@ -993,6 +961,20 @@ const styles = StyleSheet.create({
     color: theme.colors.textPrimary,
     marginLeft: 8,
   },
+  addressHintText: {
+    fontSize: 13,
+    color: theme.colors.textSecondary,
+    marginTop: 8,
+  },
+  addressErrorText: {
+    fontSize: 13,
+    color: theme.colors.danger,
+    marginTop: 8,
+  },
+  orgLoadErrorText: {
+    fontSize: 14,
+    color: theme.colors.textSecondary,
+  },
   modalButton: {
     backgroundColor: theme.colors.primary,
     padding: 16,
@@ -1009,93 +991,5 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     fontSize: 16,
     letterSpacing: 1,
-  },
-  // Demo modal styles
-  demoOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 32,
-  },
-  demoModalBox: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 24,
-    width: '100%',
-    maxWidth: 340,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.3,
-    shadowRadius: 12,
-    elevation: 10,
-  },
-  demoModalTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#1A1A1A',
-    textAlign: 'center',
-    marginBottom: 20,
-  },
-  demoModalInput: {
-    backgroundColor: '#F5F5F5',
-    borderRadius: 10,
-    padding: 14,
-    fontSize: 16,
-    color: '#1A1A1A',
-    borderWidth: 1,
-    borderColor: '#DDD',
-    textAlign: 'center',
-    letterSpacing: 2,
-  },
-  demoErrorText: {
-    color: '#B22222',
-    fontSize: 13,
-    fontWeight: '600',
-    textAlign: 'center',
-    marginTop: 10,
-  },
-  demoModalButtons: {
-    flexDirection: 'row',
-    marginTop: 20,
-    gap: 12,
-  },
-  demoCancelButton: {
-    flex: 1,
-    padding: 14,
-    borderRadius: 10,
-    backgroundColor: '#F0F0F0',
-    alignItems: 'center',
-  },
-  demoCancelText: {
-    color: '#666',
-    fontWeight: '600',
-    fontSize: 15,
-  },
-  demoSubmitButton: {
-    flex: 1,
-    padding: 14,
-    borderRadius: 10,
-    backgroundColor: theme.colors.primary,
-    alignItems: 'center',
-  },
-  demoSubmitText: {
-    color: theme.colors.textPrimary,
-    fontWeight: 'bold',
-    fontSize: 15,
-  },
-  secretMenuButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#F5F5F5',
-    padding: 14,
-    borderRadius: 10,
-    marginBottom: 10,
-  },
-  secretMenuButtonText: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: theme.colors.textPrimary,
-    marginLeft: 12,
   },
 });

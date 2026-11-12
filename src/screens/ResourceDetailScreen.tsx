@@ -16,6 +16,7 @@ import { theme } from '../theme';
 import { useAuth } from '../context/AuthContext';
 import { db } from '../config/firebase';
 import { doc, getDoc, deleteDoc } from 'firebase/firestore';
+import { confirmBlockUser, reportContent } from '../utils/moderation';
 
 const CATEGORY_COLORS: { [key: string]: string } = {
   'First Aid': '#e74c3c',
@@ -141,7 +142,47 @@ export const ResourceDetailScreen: React.FC<ResourceDetailScreenProps> = ({ navi
     return null;
   }
 
-  const canDelete = user?.id === resource.postedBy || user?.role === 'admin';
+  // Mirrors the resources delete rule: the poster, an admin of the post's own org, or a
+  // super admin. Posts saved with organizationId '' have no org admin.
+  const isPoster = !!user?.id && user.id === resource.postedBy;
+  const isOrgAdminOfPost =
+    (user?.role === 'admin' || user?.role === 'super_admin') &&
+    !!resource.organizationId &&
+    !!user?.organizationId &&
+    user.organizationId !== 'default-org' &&
+    resource.organizationId === user.organizationId;
+  const canDelete = isPoster || isOrgAdminOfPost || user?.role === 'super_admin';
+  const canReport = !isPoster;
+
+  const handleReport = () => {
+    reportContent({
+      contentType: 'resource',
+      contentId: resource.id,
+      reportedUserId: resource.postedBy || undefined,
+      reportedUserName: resource.postedByName,
+      excerpt: `${resource.title} - ${resource.description}`,
+    });
+  };
+
+  const handleBlockPoster = () => {
+    if (!resource.postedBy) return;
+    confirmBlockUser({
+      uid: resource.postedBy,
+      name: resource.postedByName,
+      onBlocked: () => navigation.goBack(),
+    });
+  };
+
+  const handleMoreActions = () => {
+    const buttons: { text: string; style?: 'cancel' | 'destructive'; onPress?: () => void }[] = [
+      { text: 'Report', onPress: handleReport },
+    ];
+    if (resource.postedBy) {
+      buttons.push({ text: 'Block poster', style: 'destructive', onPress: handleBlockPoster });
+    }
+    buttons.push({ text: 'Cancel', style: 'cancel' });
+    Alert.alert('Resource', undefined, buttons);
+  };
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -150,11 +191,26 @@ export const ResourceDetailScreen: React.FC<ResourceDetailScreenProps> = ({ navi
           <MaterialCommunityIcons name="arrow-left" size={28} color={theme.colors.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Resource Details</Text>
-        {canDelete && (
-          <TouchableOpacity onPress={handleDelete}>
-            <MaterialCommunityIcons name="delete" size={24} color={theme.colors.error} />
-          </TouchableOpacity>
-        )}
+        <View style={styles.headerActions}>
+          {canDelete && (
+            <TouchableOpacity
+              onPress={handleDelete}
+              accessibilityRole="button"
+              accessibilityLabel="Delete resource"
+            >
+              <MaterialCommunityIcons name="delete" size={24} color={theme.colors.error} />
+            </TouchableOpacity>
+          )}
+          {canReport && (
+            <TouchableOpacity
+              onPress={handleMoreActions}
+              accessibilityRole="button"
+              accessibilityLabel="Report this post or block the poster"
+            >
+              <MaterialCommunityIcons name="dots-vertical" size={24} color={theme.colors.textPrimary} />
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
 
       <ScrollView style={styles.content}>
@@ -193,6 +249,13 @@ export const ResourceDetailScreen: React.FC<ResourceDetailScreenProps> = ({ navi
 
           <Text style={styles.descriptionTitle}>Description</Text>
           <Text style={styles.description}>{resource.description}</Text>
+
+          {canReport && (
+            <TouchableOpacity style={styles.reportLink} onPress={handleMoreActions}>
+              <MaterialCommunityIcons name="flag-outline" size={16} color={theme.colors.textSecondary} />
+              <Text style={styles.reportLinkText}>Report this post or block the poster</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -218,6 +281,11 @@ const styles = StyleSheet.create({
     color: theme.colors.textPrimary,
     flex: 1,
     marginLeft: 16,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
   },
   loadingContainer: {
     flex: 1,
@@ -281,5 +349,18 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: theme.colors.textPrimary,
     lineHeight: 24,
+  },
+  reportLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 32,
+    paddingVertical: 8,
+    alignSelf: 'flex-start',
+  },
+  reportLinkText: {
+    fontSize: 14,
+    color: theme.colors.textSecondary,
+    textDecorationLine: 'underline',
   },
 });

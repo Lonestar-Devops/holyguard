@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, Image, ActivityIndicator, Alert, TextInput, Linking, Platform } from 'react-native';
 import { logger } from '../utils/logger';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -10,6 +10,7 @@ import { db } from '../config/firebase';
 import { collection, query, orderBy, onSnapshot } from 'firebase/firestore';
 import { GOOGLE_PLACES_API_KEY } from '../config/keys';
 import { haversineDistanceMiles } from '../utils/geo';
+import { useBlockedUsers } from '../utils/moderation';
 
 import { RESOURCE_CATEGORIES_WITH_ALL, RESOURCE_CATEGORY_COLORS } from '../constants/categories';
 
@@ -48,15 +49,25 @@ interface ResourcesScreenProps {
 
 export const ResourcesScreen: React.FC<ResourcesScreenProps> = ({ navigation }) => {
   const { user } = useAuth();
+  const { blocked, loading: blockedLoading } = useBlockedUsers();
   const [resources, setResources] = useState<Resource[]>([]);
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [searchText, setSearchText] = useState('');
   const [loading, setLoading] = useState(true);
   const [nearbyPlaces, setNearbyPlaces] = useState<NearbyPlace[]>([]);
-  const [placesLoading, setPlacesLoading] = useState(true);
+  // Location is requested only when the user asks for training near them.
+  const [nearbyRequested, setNearbyRequested] = useState(false);
+  const [placesLoading, setPlacesLoading] = useState(false);
   const [placesError, setPlacesError] = useState<string | null>(null);
+  const [locationBlocked, setLocationBlocked] = useState(false);
   const [searchRadiusMiles, setSearchRadiusMiles] = useState(25);
   const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   useEffect(() => {
     const resourcesQuery = query(
@@ -91,38 +102,39 @@ export const ResourcesScreen: React.FC<ResourcesScreenProps> = ({ navigation }) 
     return () => unsubscribe();
   }, []);
 
-  // Get user location on mount
-  useEffect(() => {
-    let cancelled = false;
+  // Ask for location (and then search) only after the user taps 'Find training near me'.
+  const findNearbyTraining = async () => {
+    setNearbyRequested(true);
+    setPlacesError(null);
+    setLocationBlocked(false);
+    setPlacesLoading(true);
 
-    (async () => {
-      try {
-        const { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== 'granted') {
-          if (!cancelled) {
-            setPlacesError('Location permission needed to find nearby training');
-            setPlacesLoading(false);
-          }
-          return;
-        }
-
-        const position = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
-        });
-        if (!cancelled) {
-          setUserLocation(position.coords);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          logger.error('Error getting user location:', err);
-          setPlacesError('Unable to get your location');
+    try {
+      const { status, canAskAgain } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        if (mounted.current) {
+          setLocationBlocked(!canAskAgain);
+          setPlacesError('Location permission is needed to find training near you.');
           setPlacesLoading(false);
         }
+        return;
       }
-    })();
 
-    return () => { cancelled = true; };
-  }, []);
+      const position = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+      if (mounted.current) {
+        // A new object each time, so 'Try again' searches again even from the same spot.
+        setUserLocation({ latitude: position.coords.latitude, longitude: position.coords.longitude });
+      }
+    } catch (err) {
+      if (mounted.current) {
+        logger.error('Error getting user location:', err);
+        setPlacesError('Unable to get your location');
+        setPlacesLoading(false);
+      }
+    }
+  };
 
   // Fetch nearby firearms training locations when location or radius changes
   useEffect(() => {
@@ -182,7 +194,8 @@ export const ResourcesScreen: React.FC<ResourcesScreenProps> = ({ navigation }) 
   }, [userLocation, searchRadiusMiles]);
 
   const filteredResources = useMemo(() => {
-    let results = resources;
+    // Posts from people the user blocked are hidden.
+    let results = resources.filter(r => !blocked.has(r.postedBy));
 
     if (selectedCategory !== 'All') {
       results = results.filter(r => r.category === selectedCategory);
@@ -197,7 +210,7 @@ export const ResourcesScreen: React.FC<ResourcesScreenProps> = ({ navigation }) 
     }
 
     return results;
-  }, [resources, selectedCategory, searchText]);
+  }, [resources, blocked, selectedCategory, searchText]);
 
   const getTimeAgo = (date: Date) => {
     const now = new Date();
@@ -360,7 +373,17 @@ export const ResourcesScreen: React.FC<ResourcesScreenProps> = ({ navigation }) 
           </TouchableOpacity>
         ))}
       </View>
-      {placesLoading ? (
+      {!nearbyRequested ? (
+        <View style={styles.nearbyPrompt}>
+          <Text style={styles.nearbyPromptText}>
+            Search for firearms training near your current location.
+          </Text>
+          <TouchableOpacity style={styles.nearbyButton} onPress={findNearbyTraining}>
+            <MaterialCommunityIcons name="crosshairs-gps" size={18} color={theme.colors.textPrimary} />
+            <Text style={styles.nearbyButtonText}>Find training near me</Text>
+          </TouchableOpacity>
+        </View>
+      ) : placesLoading ? (
         <View style={styles.nearbyLoading}>
           <ActivityIndicator size="small" color={theme.colors.primary} />
           <Text style={styles.nearbyLoadingText}>Finding nearby training locations...</Text>
@@ -369,6 +392,12 @@ export const ResourcesScreen: React.FC<ResourcesScreenProps> = ({ navigation }) 
         <View style={styles.nearbyError}>
           <MaterialCommunityIcons name="map-marker-off" size={24} color={theme.colors.textSecondary} />
           <Text style={styles.nearbyErrorText}>{placesError}</Text>
+          <TouchableOpacity
+            style={styles.nearbyRetry}
+            onPress={locationBlocked ? () => Linking.openSettings() : findNearbyTraining}
+          >
+            <Text style={styles.nearbyRetryText}>{locationBlocked ? 'Open Settings' : 'Try again'}</Text>
+          </TouchableOpacity>
         </View>
       ) : (
         nearbyPlaces.map(renderNearbyPlace)
@@ -435,7 +464,8 @@ export const ResourcesScreen: React.FC<ResourcesScreenProps> = ({ navigation }) 
 
       {renderCategoryFilter()}
 
-      {loading ? (
+      {/* Wait for the block list too, so a blocked user's post never flashes in. */}
+      {loading || blockedLoading ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={theme.colors.primary} />
         </View>
@@ -796,6 +826,45 @@ const styles = StyleSheet.create({
     color: theme.colors.textSecondary,
     marginTop: 6,
     textAlign: 'center',
+  },
+  nearbyPrompt: {
+    alignItems: 'center',
+    padding: 16,
+    backgroundColor: theme.colors.surface,
+    borderRadius: 12,
+  },
+  nearbyPromptText: {
+    fontSize: 13,
+    color: theme.colors.textSecondary,
+    textAlign: 'center',
+    marginBottom: 12,
+  },
+  nearbyButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: theme.colors.primary,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  nearbyButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: theme.colors.textPrimary,
+  },
+  nearbyRetry: {
+    marginTop: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: theme.colors.primary,
+  },
+  nearbyRetryText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: theme.colors.textPrimary,
   },
   nearbyCard: {
     backgroundColor: theme.colors.surface,

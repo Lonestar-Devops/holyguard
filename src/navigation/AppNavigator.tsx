@@ -19,10 +19,8 @@ import { WatchlistScreen } from '../screens/WatchlistScreen';
 import { CreateWatchlistEntryScreen } from '../screens/CreateWatchlistEntryScreen';
 import { WatchlistDetailScreen } from '../screens/WatchlistDetailScreen';
 import { AdminReviewScreen } from '../screens/AdminReviewScreen';
-import { DemoSelectorScreen } from '../screens/DemoSelectorScreen';
-import { DemoSchoolGuardScreen } from '../screens/DemoSchoolGuardScreen';
-import { DemoCompanyGuardScreen } from '../screens/DemoCompanyGuardScreen';
 import { SeatManagementScreen } from '../screens/SeatManagementScreen';
+import { BlockedUsersScreen } from '../screens/BlockedUsersScreen';
 import { PaywallScreen } from '../screens/PaywallScreen';
 import { useAuth } from '../context/AuthContext';
 import { theme } from '../theme';
@@ -41,7 +39,7 @@ const WatchlistStack = createStackNavigator();
 
 const TeamNavigator = () => {
   return (
-    <TeamStack.Navigator screenOptions={{ headerShown: false }}>
+    <TeamStack.Navigator screenOptions={{ headerShown: false, headerBackTitle: 'Back' }}>
       <TeamStack.Screen name="TeamMain" component={TeamScreen} />
       <TeamStack.Screen
         name="InviteMembers"
@@ -58,12 +56,14 @@ const TeamNavigator = () => {
 
 const DashboardNavigator = () => {
   return (
-    <DashboardStack.Navigator screenOptions={{ headerShown: false }}>
+    <DashboardStack.Navigator screenOptions={{ headerShown: false, headerBackTitle: 'Back' }}>
       <DashboardStack.Screen name="DashboardMain" component={DashboardScreen} />
       <DashboardStack.Screen name="Settings" component={SettingsScreen} />
-      <DashboardStack.Screen name="DemoSelector" component={DemoSelectorScreen} />
-      <DashboardStack.Screen name="DemoSchoolGuard" component={DemoSchoolGuardScreen} />
-      <DashboardStack.Screen name="DemoCompanyGuard" component={DemoCompanyGuardScreen} />
+      <DashboardStack.Screen
+        name="BlockedUsers"
+        component={BlockedUsersScreen}
+        options={{ headerShown: true, title: 'Blocked Users' }}
+      />
       <DashboardStack.Screen name="CreateWatchlistEntry" component={CreateWatchlistEntryScreen} />
       <DashboardStack.Screen name="SeatManagement" component={SeatManagementScreen} />
       <DashboardStack.Screen
@@ -77,7 +77,7 @@ const DashboardNavigator = () => {
 
 const DMNavigator = () => {
   return (
-    <DMStack.Navigator screenOptions={{ headerShown: false }}>
+    <DMStack.Navigator screenOptions={{ headerShown: false, headerBackTitle: 'Back' }}>
       <DMStack.Screen name="DirectMessagesMain" component={DirectMessagesScreen} />
       <DMStack.Screen name="UserDirectory" component={UserDirectoryScreen} />
       <DMStack.Screen name="DirectMessageChat" component={DirectMessageChatScreen} />
@@ -87,7 +87,7 @@ const DMNavigator = () => {
 
 const ResourcesNavigator = () => {
   return (
-    <ResourcesStack.Navigator screenOptions={{ headerShown: false }}>
+    <ResourcesStack.Navigator screenOptions={{ headerShown: false, headerBackTitle: 'Back' }}>
       <ResourcesStack.Screen name="ResourcesMain" component={ResourcesScreen} />
       <ResourcesStack.Screen name="CreateResource" component={CreateResourceScreen} />
       <ResourcesStack.Screen name="ResourceDetail" component={ResourceDetailScreen} />
@@ -97,7 +97,7 @@ const ResourcesNavigator = () => {
 
 const WatchlistNavigator = () => {
   return (
-    <WatchlistStack.Navigator screenOptions={{ headerShown: false }}>
+    <WatchlistStack.Navigator screenOptions={{ headerShown: false, headerBackTitle: 'Back' }}>
       <WatchlistStack.Screen name="WatchlistMain" component={WatchlistScreen} />
       <WatchlistStack.Screen name="CreateWatchlistEntry" component={CreateWatchlistEntryScreen} />
       <WatchlistStack.Screen name="WatchlistDetail" component={WatchlistDetailScreen} />

@@ -2,6 +2,7 @@ export interface Alert {
     id: string;
     title: string;
     location: string;
+    organizationId?: string; // the org's id field ('org_<ms>'), as the rules require on every alert
     timestamp: string; // ISO string or relative time for display
     type: 'alert' | 'warning' | 'info';
     category?: string; // Incident type: Trespass, Theft, etc.
@@ -55,6 +56,10 @@ export interface UserProfile {
     subscriptionPlan?: SubscriptionPlan;
     subscriptionStatus?: SubscriptionStatus;
     maxSeats?: number;
+    // uids this user has blocked (users/{uid}.blockedUsers, written only by the user).
+    // Screens that filter content read the profile doc live; this copy is as of the
+    // last profile load.
+    blockedUsers?: string[];
 }
 
 export interface VerificationCheck {

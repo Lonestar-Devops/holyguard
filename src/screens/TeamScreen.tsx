@@ -6,11 +6,13 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { theme } from '../theme';
 import { useAuth } from '../context/AuthContext';
 import { db } from '../config/firebase';
-import { collection, addDoc, serverTimestamp, query, orderBy, limit, onSnapshot, where, getDocs } from 'firebase/firestore';
+import { collection, addDoc, serverTimestamp, query, orderBy, limit, onSnapshot, where, getDocs, doc, deleteDoc } from 'firebase/firestore';
+import { reportContent } from '../utils/moderation';
 
 interface Message {
   id: string;
   text: string;
+  senderId?: string;
   senderName: string;
   senderRole: string;
   timestamp: Date;
@@ -138,6 +140,7 @@ export const TeamScreen = ({ navigation, route }: any) => {
           return {
             id: doc.id,
             text: data.text,
+            senderId: data.senderId,
             senderName: data.senderName,
             senderRole: data.senderRole,
             timestamp: data.timestamp?.toDate() || new Date(),
@@ -202,10 +205,71 @@ export const TeamScreen = ({ navigation, route }: any) => {
     );
   };
 
+  const isOrgAdmin = user?.role === 'admin' || user?.role === 'super_admin';
+
+  // Messages saved without a senderId (very old ones) fall back to the name match.
+  const isOwn = (item: Message) =>
+    item.senderId ? item.senderId === user?.id : item.senderName === user?.name;
+
+  const confirmDeleteMessage = (item: Message) => {
+    Alert.alert(
+      'Delete Message',
+      'Delete this message for everyone in the channel? This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deleteDoc(doc(db, 'team_messages', item.id));
+            } catch (error) {
+              logger.error('[TeamScreen] Error deleting message:', error);
+              Alert.alert('Error', 'Could not delete the message. Please try again.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleMessageLongPress = (item: Message) => {
+    const own = isOwn(item);
+    const ownBySenderId = !!item.senderId && item.senderId === user?.id;
+    const buttons: { text: string; style?: 'cancel' | 'destructive'; onPress?: () => void }[] = [];
+
+    if (!own) {
+      buttons.push({
+        text: 'Report',
+        onPress: () =>
+          reportContent({
+            contentType: 'team_message',
+            contentId: item.id,
+            reportedUserId: item.senderId,
+            reportedUserName: item.senderName,
+            excerpt: item.text,
+          }),
+      });
+    }
+    // The sender, or an admin of the org, may delete.
+    if (ownBySenderId || isOrgAdmin) {
+      buttons.push({ text: 'Delete', style: 'destructive', onPress: () => confirmDeleteMessage(item) });
+    }
+    if (buttons.length === 0) return;
+    buttons.push({ text: 'Cancel', style: 'cancel' });
+
+    Alert.alert('Message', undefined, buttons);
+  };
+
   const renderMessage = ({ item }: { item: Message }) => {
-    const isOwnMessage = item.senderName === user?.name;
+    const isOwnMessage = isOwn(item);
     return (
-      <View style={[styles.messageBubble, isOwnMessage && styles.ownMessage]}>
+      <TouchableOpacity
+        activeOpacity={0.8}
+        onLongPress={() => handleMessageLongPress(item)}
+        accessibilityHint="Long press for message actions"
+        style={[styles.messageBubble, isOwnMessage && styles.ownMessage]}
+      >
         <View style={styles.messageHeader}>
           <Text style={styles.senderName}>{item.senderName}</Text>
           {item.senderRole && (
@@ -216,7 +280,7 @@ export const TeamScreen = ({ navigation, route }: any) => {
         <Text style={styles.messageTime}>
           {item.timestamp.toLocaleDateString([], { month: 'short', day: 'numeric' })} at {item.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
         </Text>
-      </View>
+      </TouchableOpacity>
     );
   };
 

@@ -138,22 +138,22 @@ export const AlertDetailModal: React.FC<AlertDetailModalProps> = ({ alert, visib
 
       setLoadingOrg(true);
       try {
-        const orgId = alert.location;
-        let orgDoc = await getDoc(doc(db, 'organizations', orgId));
-
-        if (!orgDoc.exists()) {
-          const orgQuery = query(
-            collection(db, 'organizations'),
-            where('id', '==', orgId)
-          );
-          const querySnapshot = await getDocs(orgQuery);
+        // Every alert carries its org's id field ('org_<ms>') in organizationId (the rules
+        // require it). Older alerts only have it in location, which other alerts use for a
+        // street address. Look the org up like AuthContext does: by id field, then doc id.
+        const orgId = alert.organizationId || alert.location;
+        let data: any = null;
+        if (orgId) {
+          const querySnapshot = await getDocs(query(collection(db, 'organizations'), where('id', '==', orgId)));
           if (!querySnapshot.empty) {
-            orgDoc = querySnapshot.docs[0];
+            data = querySnapshot.docs[0].data();
+          } else if (!orgId.includes('/')) {
+            const orgDoc = await getDoc(doc(db, 'organizations', orgId));
+            if (orgDoc.exists()) data = orgDoc.data();
           }
         }
 
-        if (orgDoc.exists()) {
-          const data = orgDoc.data();
+        if (data) {
           setOrgDetails({
             name: data.name || 'Unknown',
             address: data.address || 'Address not available',
@@ -161,15 +161,18 @@ export const AlertDetailModal: React.FC<AlertDetailModalProps> = ({ alert, visib
             longitude: data.longitude,
           });
         } else {
+          // Alerts are only visible inside the viewer's own org, so fall back to its name,
+          // and show the alert's location text when it isn't just an id.
+          const place = alert.location && alert.location !== orgId && alert.location !== 'Unknown' ? alert.location : '';
           setOrgDetails({
-            name: orgId,
-            address: 'Organization details not found',
+            name: user?.organizationName || 'Your organization',
+            address: place,
           });
         }
       } catch (error) {
         logger.error('Error fetching organization:', error);
         setOrgDetails({
-          name: alert.location,
+          name: user?.organizationName || 'Your organization',
           address: 'Unable to load details',
         });
       } finally {
@@ -375,10 +378,12 @@ export const AlertDetailModal: React.FC<AlertDetailModalProps> = ({ alert, visib
                       <MaterialCommunityIcons name="office-building" size={16} color={theme.colors.textSecondary} style={{ marginRight: 6 }} />
                       <Text style={styles.orgText}>{orgDetails.name}</Text>
                     </View>
-                    <View style={styles.orgRow}>
-                      <MaterialCommunityIcons name="map-marker" size={16} color={theme.colors.textSecondary} style={{ marginRight: 6 }} />
-                      <Text style={styles.orgText}>{orgDetails.address}</Text>
-                    </View>
+                    {orgDetails.address ? (
+                      <View style={styles.orgRow}>
+                        <MaterialCommunityIcons name="map-marker" size={16} color={theme.colors.textSecondary} style={{ marginRight: 6 }} />
+                        <Text style={styles.orgText}>{orgDetails.address}</Text>
+                      </View>
+                    ) : null}
                   </>
                 ) : null}
               </View>

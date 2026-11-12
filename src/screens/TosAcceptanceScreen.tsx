@@ -3,9 +3,11 @@ import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { theme } from '../theme';
 import { useAuth } from '../context/AuthContext';
-import { auth, db } from '../config/firebase';
+import { db } from '../config/firebase';
 import { doc, updateDoc, setDoc } from 'firebase/firestore';
 import { logger } from '../utils/logger';
+import { TERMS_URL, PRIVACY_URL } from '../constants/links';
+import { AccountActions } from '../components/AccountActions';
 
 export const TosAcceptanceScreen = () => {
     const [accepted, setAccepted] = useState(false);
@@ -90,10 +92,10 @@ export const TosAcceptanceScreen = () => {
             </View>
 
             <View style={styles.linkRow}>
-                <TouchableOpacity onPress={() => Linking.openURL('https://atmksheldon.github.io/holyguard/terms.html')}>
+                <TouchableOpacity onPress={() => Linking.openURL(TERMS_URL)}>
                     <Text style={styles.docLink}>Read Full Terms of Service</Text>
                 </TouchableOpacity>
-                <TouchableOpacity onPress={() => Linking.openURL('https://atmksheldon.github.io/holyguard/privacy.html')}>
+                <TouchableOpacity onPress={() => Linking.openURL(PRIVACY_URL)}>
                     <Text style={styles.docLink}>Read Privacy Policy</Text>
                 </TouchableOpacity>
             </View>
@@ -105,7 +107,7 @@ export const TosAcceptanceScreen = () => {
             >
                 <View style={[styles.checkbox, accepted && styles.checkboxChecked]}>
                     {accepted && (
-                        <MaterialCommunityIcons name="check" size={16} color={theme.colors.white} />
+                        <MaterialCommunityIcons name="check" size={16} color={theme.colors.textPrimary} />
                     )}
                 </View>
                 <Text style={styles.tosText}>
@@ -122,11 +124,13 @@ export const TosAcceptanceScreen = () => {
                 disabled={loading || !accepted}
             >
                 {loading ? (
-                    <ActivityIndicator color={theme.colors.white} />
+                    <ActivityIndicator color={theme.colors.textPrimary} />
                 ) : (
                     <Text style={styles.buttonText}>CONTINUE</Text>
                 )}
             </TouchableOpacity>
+
+            <AccountActions style={styles.accountActions} />
         </ScrollView>
     );
 };
@@ -244,5 +248,8 @@ const styles = StyleSheet.create({
         fontWeight: 'bold',
         fontSize: 16,
         letterSpacing: 1,
+    },
+    accountActions: {
+        marginTop: 20,
     },
 });
