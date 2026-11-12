@@ -17,7 +17,8 @@ module.exports = {
     splash: {
       image: "./assets/splash-icon.png",
       resizeMode: "contain",
-      backgroundColor: "#ffffff",
+      // Matches the dark margin of the badge in splash-icon.png.
+      backgroundColor: "#17161D",
     },
     ios: {
       supportsTablet: true,
@@ -26,9 +27,10 @@ module.exports = {
       buildNumber: "1",
       infoPlist: {
         ITSAppUsesNonExemptEncryption: false,
-        NSCameraUsageDescription: "HolyGuard uses your camera to capture photos of security incidents so your team can see what happened and respond quickly.",
-        NSLocationWhenInUseUsageDescription: "HolyGuard uses your location to tag incident reports with GPS coordinates so your security team knows exactly where an incident occurred.",
-        NSPhotoLibraryUsageDescription: "HolyGuard accesses your photo library so you can attach existing photos to incident reports and watchlist entries.",
+        // Purpose strings must cover every feature that can trigger the prompt (5.1.1).
+        NSCameraUsageDescription: "HolyGuard uses your camera to capture photos of security incidents so your team can see what happened and respond quickly, and to take photos you share in direct messages and Resources posts.",
+        NSLocationWhenInUseUsageDescription: "HolyGuard uses your location to tag incident reports with GPS coordinates so your security team knows exactly where an incident occurred, and to find security training near you when you tap Find training near me.",
+        NSPhotoLibraryUsageDescription: "HolyGuard accesses your photo library so you can attach existing photos to incident reports, watchlist entries, direct messages, and Resources posts.",
       },
     },
     android: {
@@ -52,6 +54,12 @@ module.exports = {
           RNMapboxMapsImpl: "mapbox",
         },
       ],
+      // Xcode 27 fails the build when a pod target (including resource bundles) is below
+      // iOS 15.0; this raises every pod target to 15.1 in the generated Podfile.
+      ["./plugins/withPodDeploymentTarget", { deploymentTarget: "15.1" }],
+      // Apps built with the iOS 27 SDK must use the UIScene life cycle or UIKit stops them
+      // at launch; Expo SDK 54's AppDelegate doesn't, so this adds a SceneDelegate.
+      "./plugins/withSceneLifecycle",
     ],
     web: {
       favicon: "./assets/favicon.png",
