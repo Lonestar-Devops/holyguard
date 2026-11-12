@@ -41,9 +41,9 @@ service cloud.firestore {
     }
 
     // True when the organization document being accessed belongs to the caller.
-    // Compares the org's `id` FIELD to the caller's org id (both are 'org_<ms>'),
-    // which works for app-created orgs (random doc id, id field set) and
-    // script-provisioned orgs (doc id == id field) alike.
+    // Compares the org's `id` FIELD to the caller's org id, which works for
+    // app-created orgs (random doc id, id field 'org_<ms>') and orgs whose id field
+    // equals their doc id (scripts/provision-sponsored-org.js) alike.
     function ownsOrg(orgData) {
       return ('id' in orgData) && orgData.id == myOrgId();
     }
@@ -71,6 +71,36 @@ service cloud.firestore {
     }
 
     // ---------------------------------------------------------------------------
+    // Blocking. users/{uid}.blockedUsers is the list of uids that user has blocked,
+    // written only by its owner (see the self-update rule).
+    // ---------------------------------------------------------------------------
+
+    // A profile's blockedUsers, when present, is a list of at most 500 entries.
+    function validBlockedUsers(d) {
+      return !('blockedUsers' in d) ||
+        (d.blockedUsers is list && d.blockedUsers.size() <= 500);
+    }
+
+    // True when users/<uid> lists `other` in its blockedUsers. A missing profile, or
+    // one without the field, blocks nobody.
+    function hasBlocked(uid, other) {
+      let p = /databases/$(database)/documents/users/$(uid);
+      return exists(p) && other in get(p).data.get('blockedUsers', []);
+    }
+
+    // Neither the caller nor `other` has blocked the other one.
+    function notBlockedEitherWay(other) {
+      return !hasBlocked(other, request.auth.uid) && !hasBlocked(request.auth.uid, other);
+    }
+
+    // The participant of a two-person conversation who is not the caller (the caller
+    // itself for a conversation that somehow has fewer than two participants).
+    function otherParticipant(parts) {
+      return parts.size() < 2 ? request.auth.uid
+           : (parts[0] == request.auth.uid ? parts[1] : parts[0]);
+    }
+
+    // ---------------------------------------------------------------------------
     // User Profiles
     //
     // Any signed-in user can read profiles (the cross-org user directory / DM
@@ -92,15 +122,17 @@ service cloud.firestore {
           request.resource.data.role in ['', 'member', 'security', 'admin']) &&
         (!('organization_id' in request.resource.data) ||
           request.resource.data.organization_id == '' ||
-          isFreshOrgId(request.resource.data.organization_id));
+          isFreshOrgId(request.resource.data.organization_id)) &&
+        validBlockedUsers(request.resource.data);
 
-      // Later self-updates (TOS acceptance, profile fields) can never add, remove or
-      // change role or either org-id spelling (presence-aware, so legacy profiles that
-      // lack a field can still accept TOS). The live client only ever updates
-      // tos_accepted_at. `resource == null` only matches an updateDoc of a missing
-      // profile, which then fails NOT_FOUND without writing, so the TOS screen's
-      // setDoc-merge fallback runs exactly as under the old rules.
+      // Later self-updates (TOS acceptance, profile fields, Block / Unblock) can never
+      // add, remove or change role or either org-id spelling (presence-aware, so legacy
+      // profiles that lack a field can still accept TOS). Live 1.2.7 only ever updates
+      // tos_accepted_at; 1.2.8 also writes blockedUsers. `resource == null` only matches
+      // an updateDoc of a missing profile, which then fails NOT_FOUND without writing,
+      // so the TOS screen's setDoc-merge fallback runs exactly as under the old rules.
       allow update: if isSignedIn() && request.auth.uid == userId &&
+        validBlockedUsers(request.resource.data) &&
         (resource == null ||
          (unchanged('role') && unchanged('organization_id') && unchanged('organizationId')));
 
@@ -168,7 +200,11 @@ service cloud.firestore {
       // The live app never edits a team message. An update could move a message into
       // another org's channel or rewrite its sender, so none is allowed.
       allow update: if false;
-      allow delete: if isSignedIn() && request.auth.uid == resource.data.senderId;
+
+      // The sender, or an admin / super admin of the message's own org (moderation).
+      allow delete: if isSignedIn() &&
+        (request.auth.uid == resource.data.get('senderId', null) ||
+         (isAdmin() && resource.data.get('organizationId', null) == myOrgId()));
     }
 
     // ---------------------------------------------------------------------------
@@ -208,20 +244,30 @@ service cloud.firestore {
         (!('verificationSubmittedAt' in request.resource.data) ||
           request.resource.data.verificationSubmittedAt == request.time);
 
-      // Super admin: anything. Otherwise: only a member of THIS org, and only the
-      // map/display fields (name/address/lat/lng) may change — every sensitive
-      // field is pinned to its current value. The live client's only org update
-      // is Settings → Update Organization writing exactly those four fields.
+      // Super admin: anything. Live 1.2.7's redeem-key flows (reachable only by a super
+      // admin) write {grandfathered: true} through that branch, so keep it unrestricted
+      // while 1.2.7 is live. Otherwise only an admin of THIS org, through Settings →
+      // Update Organization (1.2.8 shows it to admins only; 1.2.7 to every member): only
+      // the map/display fields may change, within sane limits, and not while the org is
+      // pending or rejected (its review covers the name and address it was submitted
+      // with). Every sensitive field is pinned to its current value.
       // A legacy org doc with no `id` field is matched by its doc id (its members carry
       // the doc id); orgs that have an id field are only ever matched by that field.
       allow update: if isSignedIn() && (
         isSuperAdmin() ||
-        ( ( ownsOrg(resource.data) ||
+        ( isAdmin() &&
+          ( ownsOrg(resource.data) ||
             (!('id' in resource.data) && orgId == myOrgId()) ) &&
+          !(resource.data.get('status', '') in ['pending', 'rejected']) &&
           request.resource.data.name is string &&
+          request.resource.data.name.size() > 0 &&
+          request.resource.data.name.size() <= 100 &&
           request.resource.data.address is string &&
+          request.resource.data.address.size() <= 300 &&
           request.resource.data.latitude is number &&
+          request.resource.data.latitude >= -90 && request.resource.data.latitude <= 90 &&
           request.resource.data.longitude is number &&
+          request.resource.data.longitude >= -180 && request.resource.data.longitude <= 180 &&
           request.resource.data.diff(resource.data).affectedKeys()
             .hasOnly(['name', 'address', 'latitude', 'longitude']) )
       );
@@ -271,7 +317,7 @@ service cloud.firestore {
     }
 
     // ---------------------------------------------------------------------------
-    // DM Invites
+    // DM Invites — no request between two users when either has blocked the other.
     // ---------------------------------------------------------------------------
     match /dm_invites/{inviteId} {
       allow read: if isSignedIn() &&
@@ -281,7 +327,8 @@ service cloud.firestore {
       allow create: if isSignedIn() &&
         request.resource.data.fromUserId == request.auth.uid &&
         request.resource.data.toUserId is string &&
-        request.resource.data.status == 'pending';
+        request.resource.data.status == 'pending' &&
+        notBlockedEitherWay(request.resource.data.toUserId);
 
       allow update: if isSignedIn() &&
         request.auth.uid == resource.data.toUserId &&
@@ -291,24 +338,37 @@ service cloud.firestore {
     }
 
     // ---------------------------------------------------------------------------
-    // Conversations
+    // Conversations — created by the invite recipient on Accept (participants
+    // [fromUserId, toUserId]); participants update lastMessage* after each send.
     // ---------------------------------------------------------------------------
     match /conversations/{conversationId} {
       allow read: if isSignedIn() &&
         request.auth.uid in resource.data.participants;
 
+      // Not between two users when either has blocked the other.
       allow create: if isSignedIn() &&
         request.auth.uid in request.resource.data.participants &&
-        request.resource.data.participants.size() == 2;
+        request.resource.data.participants.size() == 2 &&
+        notBlockedEitherWay(otherParticipant(request.resource.data.participants));
 
+      // A user the other participant has blocked can no longer write to the
+      // conversation (its lastMessage preview included).
       allow update: if isSignedIn() &&
         request.auth.uid in resource.data.participants &&
-        request.resource.data.participants == resource.data.participants;
+        request.resource.data.participants == resource.data.participants &&
+        !hasBlocked(otherParticipant(resource.data.participants), request.auth.uid);
     }
 
     // ---------------------------------------------------------------------------
-    // Direct Messages — sender must be a participant of the conversation
+    // Direct Messages — sender must be a participant of the conversation, and
+    // neither participant may have blocked the other.
     // ---------------------------------------------------------------------------
+    function canSendInConversation(conversationId) {
+      let parts = get(/databases/$(database)/documents/conversations/$(conversationId)).data.participants;
+      return request.auth.uid in parts &&
+        notBlockedEitherWay(otherParticipant(parts));
+    }
+
     match /direct_messages/{messageId} {
       allow read: if isSignedIn() &&
         request.auth.uid in get(/databases/$(database)/documents/conversations/$(resource.data.conversationId)).data.participants;
@@ -319,7 +379,7 @@ service cloud.firestore {
         request.resource.data.text.size() <= 500 &&
         request.resource.data.conversationId is string &&
         (!('imageUrl' in request.resource.data) || request.resource.data.imageUrl is string) &&
-        request.auth.uid in get(/databases/$(database)/documents/conversations/$(request.resource.data.conversationId)).data.participants;
+        canSendInConversation(request.resource.data.conversationId);
 
       allow update, delete: if false;
     }
