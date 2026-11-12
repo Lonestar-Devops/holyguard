@@ -1,6 +1,6 @@
 # Terms of Service for HolyGuard
 
-**Last Updated: March 23, 2026**
+**Last Updated: November 10, 2026**
 
 ## 1. Acceptance of Terms
 
@@ -79,6 +79,8 @@ Any misuse of the HolyGuard platform, including but not limited to filing false 
 - Harass, threaten, or intimidate other users
 - Use the App for any illegal activities
 - Share explicit, offensive, or inappropriate content
+- Send unwanted, abusive, or repeated direct messages or message requests
+- Make unverified accusations against an identifiable person
 - Attempt to hack, disrupt, or damage the App
 - Impersonate others or misrepresent your role
 - Use the App for commercial purposes without permission
@@ -88,7 +90,7 @@ Any misuse of the HolyGuard platform, including but not limited to filing false 
 
 ### Your Content
 - You retain ownership of photos, messages, and reports you submit
-- You grant HolyGuard a license to store, display, and share your content within your organization
+- You grant HolyGuard a license to store, display, and share your content within your organization and, for the network-wide features (Resources posts, the user directory, and direct messages), with the other HolyGuard users who can see them, as described in our Privacy Policy
 - You are responsible for the content you submit
 - You must have permission to photograph individuals or property
 
@@ -98,6 +100,20 @@ Any misuse of the HolyGuard platform, including but not limited to filing false 
 - Do not include personally identifiable information of minors
 - Report sensitive content responsibly and appropriately
 
+### Zero Tolerance for Objectionable Content and Abusive Users
+**HolyGuard has zero tolerance for objectionable content and abusive users.** You may not post or send content that is defamatory, discriminatory, hateful, harassing, threatening, sexually explicit, or gratuitously violent, that exposes another person's private information without a legitimate security purpose, or that makes unverified accusations against an identifiable person. Abusive behavior toward other users, including harassment, threats, and repeated unwanted messages, is not tolerated.
+
+When we find content that violates these Terms, we remove it, and we suspend or permanently ban the user who posted it and, where applicable, the sponsoring organization's account.
+
+### Reporting and Blocking
+- **Report**: Use Report on a Resources post, a direct message or conversation, a user in the directory, or a team message. This opens a pre-filled email to support@cowboystateops.com. You can also email us directly at that address.
+- **Block**: Use Block on a user in the directory, a conversation, or a Resources post to block that user. Blocked users are hidden from your user directory, direct messages, and Resources, and cannot send you message requests or messages. You can review and unblock users in Settings > Blocked Users.
+- **Organization admins** can delete team messages in their organization's channels and remove members from their organization.
+- **Review**: We review every report within 24 hours and act on content and users that violate these Terms.
+
+### Watchlist Entries
+Watchlist entries may describe people who are not HolyGuard users. Record only people involved in an actual security incident at your organization's site, keep entries accurate and factual, and do not include unverified accusations. Watchlist entries are visible only to members of your organization.
+
 ### Removal Rights
 - We reserve the right to remove content that violates these Terms
 - Repeated violations may result in account suspension or termination
@@ -106,7 +122,8 @@ Any misuse of the HolyGuard platform, including but not limited to filing false 
 
 Your use of HolyGuard is subject to our Privacy Policy. By using the App, you acknowledge that:
 - We collect and process data as described in our Privacy Policy
-- Security alerts and messages are shared with members of your organization
+- Security alerts, team messages, and Watchlist entries are shared with members of your organization
+- Resources posts, the user directory, and direct messages connect users across organizations, as described in our Privacy Policy
 - We use Firebase/Google Cloud for data storage and processing
 
 ## 9. Security and Incident Reporting
@@ -150,7 +167,8 @@ You agree to indemnify and hold harmless HolyGuard, its developers, and affiliat
 ## 12. Termination
 
 ### By You
-- You may delete your account at any time through the App or by contacting us
+- You may delete your account at any time in the App at Settings > Delete Account (or with the Delete Account button on the screens shown after you sign in but before you reach Settings, such as the pending approval and subscription screens), or by emailing support@cowboystateops.com
+- Deleting your account does not cancel an App Store subscription; manage subscriptions in your Apple account settings
 
 ### By Us
 We may suspend or terminate your account if:
@@ -192,7 +210,8 @@ We grant you a limited, non-exclusive, non-transferable license to use the App f
 HolyGuard integrates with third-party services:
 - Google Firebase (authentication, database, storage)
 - Google Maps/Places API (location services)
-- Apple services (notifications, distribution)
+- Mapbox (network map)
+- Apple App Store (distribution and in-app subscription payments)
 
 Your use of these services is subject to their respective terms and policies.
 
@@ -223,13 +242,10 @@ You may not assign these Terms. We may assign our rights without restriction.
 
 ## 18. Contact Information
 
-For questions about these Terms:
+For questions about these Terms, support, privacy concerns, or to report content or a user:
 
-**Email**: stark@lonestardevops.com
+**Email**: support@cowboystateops.com
 **Mail**: 5900 Balcones Dr, Austin, TX. 78731
-
-For support issues: stark@lonestardevops.com
-For privacy concerns: frosty@lonestardevops.com
 
 ## 19. Acknowledgment
 
