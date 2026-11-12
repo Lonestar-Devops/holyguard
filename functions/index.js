@@ -527,7 +527,11 @@ async function recalculateAndUpdateStatus(orgId) {
                      (checks.emailDomain?.score || 0) +
                      (checks.phoneSms?.score || 0);
 
-  const autoApproved = totalScore >= AUTO_APPROVE_THRESHOLD;
+  // A super admin's rejection stands: a new score never auto-approves a rejected org.
+  const orgDoc = await db.collection('organizations').doc(orgId).get();
+  const rejected = orgDoc.exists && orgDoc.data().status === 'rejected';
+
+  const autoApproved = !rejected && totalScore >= AUTO_APPROVE_THRESHOLD;
 
   await db.collection('organizations').doc(orgId)
     .collection('verification').doc('checks').update({
@@ -547,7 +551,13 @@ async function recalculateAndUpdateStatus(orgId) {
     });
   }
 
-  return { totalScore, autoApproved };
+  return { totalScore, autoApproved, rejected };
+}
+
+// The status the confirm endpoints report after recalculateAndUpdateStatus.
+function statusAfterRecalculation(result) {
+  if (result.rejected) return 'rejected';
+  return result.autoApproved ? 'verified' : 'pending';
 }
 
 // Main verification orchestrator
@@ -597,6 +607,12 @@ exports.verifyOrganization = functions.https.onRequest(async (req, res) => {
     // Never downgrade an organization that is already verified/active.
     if (orgData.status === 'verified' || orgData.status === 'Active') {
       res.status(200).json({ status: orgData.status, score: orgData.verificationScore || 0, alreadyVerified: true });
+      return;
+    }
+    // A super admin's rejection stands: re-scoring must not move a rejected org back to
+    // 'pending' or auto-approve it. No app version offers verification from the Rejected screen.
+    if (orgData.status === 'rejected') {
+      res.status(409).json({ error: 'Organization was not approved', status: 'rejected' });
       return;
     }
 
@@ -819,7 +835,7 @@ exports.confirmOrgEmail = functions.https.onRequest(async (req, res) => {
       success: true,
       totalScore: result.totalScore,
       autoApproved: result.autoApproved,
-      status: result.autoApproved ? 'verified' : 'pending',
+      status: statusAfterRecalculation(result),
     });
   } catch (error) {
     console.error('Error confirming org email:', error);
@@ -876,7 +892,7 @@ exports.confirmPhoneVerification = functions.https.onRequest(async (req, res) =>
       success: true,
       totalScore: result.totalScore,
       autoApproved: result.autoApproved,
-      status: result.autoApproved ? 'verified' : 'pending',
+      status: statusAfterRecalculation(result),
     });
   } catch (error) {
     console.error('Error confirming phone verification:', error);
@@ -945,9 +961,12 @@ exports.reviewOrganization = functions.https.onRequest(async (req, res) => {
 // =====================================================================================
 // Apple In-App Purchase — receipt validation and Server Notifications V2
 //
-// validateAppleReceipt: called by the client after a sandbox/production purchase.
-//   Verifies the receipt with Apple's verifyReceipt endpoint using APPLE_SHARED_SECRET,
-//   then writes the resulting subscription state to the user's org doc.
+// validateAppleReceipt: called by the client after a sandbox/production purchase with
+//   { jws } (1.2.8 also sends productId, which is ignored). Verifies the StoreKit 2
+//   signed transaction, then writes the plan to the caller's org doc. A refunded or
+//   revoked transaction is refused; a grandfathered org only gets the Apple link fields
+//   (no plan, seat cap or status); an org already paying through a different, still
+//   running subscription is refused with 409 instead of being silently relinked.
 //
 // appleNotifications:   App Store Server Notifications V2 endpoint configured in
 //   App Store Connect → App Information → App Store Server Notifications.
@@ -1008,6 +1027,18 @@ async function findOrgRefByOriginalTxId(originalTransactionId) {
     .limit(1)
     .get();
   return snap.empty ? null : snap.docs[0].ref;
+}
+
+// True when the org is linked to a DIFFERENT Apple subscription that is still running:
+// the org is active on it and its last known expiry is in the future. A refunded or
+// revoked one (appleNotifications set the org to 'expired') doesn't count, so the org
+// can subscribe again.
+function hasOtherActiveAppleLink(org, originalTransactionId, nowMs) {
+  const linked = org.appleOriginalTransactionId;
+  return typeof linked === 'string' && linked !== '' &&
+    linked !== originalTransactionId &&
+    Number(org.appleExpiresDateMs) > nowMs &&
+    org.subscriptionStatus === 'active';
 }
 
 async function verifyReceiptWithApple(receipt) {
@@ -1105,6 +1136,10 @@ exports.validateAppleReceipt = functions.https.onRequest(async (req, res) => {
     if (!originalTransactionId) {
       return res.status(200).json({ valid: false, error: 'Missing originalTransactionId' });
     }
+    // A refunded or revoked transaction grants nothing, even before it expires.
+    if (tx.revocationDate) {
+      return res.status(200).json({ valid: false, error: 'Subscription revoked' });
+    }
     if (!expiresMs || expiresMs <= Date.now()) {
       return res.status(200).json({ valid: false, error: 'Subscription expired', expiresDateMs: expiresMs });
     }
@@ -1118,24 +1153,52 @@ exports.validateAppleReceipt = functions.https.onRequest(async (req, res) => {
 
     const planInfo = PRODUCT_TO_PLAN[productId];
     const nowIso = new Date().toISOString();
+    const org = (await orgRef.get()).data() || {};
+    const appleLink = {
+      appleOriginalTransactionId: originalTransactionId,
+      appleProductId: productId,
+      appleExpiresDateMs: expiresMs || null,
+      appleEnvironment: tx.environment || null,
+    };
+    const success = {
+      valid: true,
+      productId,
+      plan: planInfo.plan,
+      expiresDateMs: expiresMs || null,
+    };
+
+    // The org pays through another, still-running subscription. Relinking would orphan
+    // that one: its renewals and expiry would no longer find this org.
+    const otherActiveLink = hasOtherActiveAppleLink(org, originalTransactionId, Date.now());
+
+    // A grandfathered org has no plan or seat cap and never needs a subscription to stay
+    // active, so a purchase only records the Apple link (when that link is free). Success
+    // either way, so the client finishes the transaction.
+    if (org.grandfathered === true) {
+      if (!otherActiveLink) {
+        await orgRef.update({ ...appleLink, subscriptionUpdatedAt: nowIso });
+      }
+      return res.status(200).json({ ...success, grandfathered: true });
+    }
+
+    if (otherActiveLink) {
+      return res.status(409).json({
+        valid: false,
+        error: 'This organization already has an active App Store subscription from another Apple ID. ' +
+          'It stays in effect until it expires or is cancelled; contact support if you need to change who pays.',
+      });
+    }
+
     await orgRef.update({
       subscriptionPlan: planInfo.plan,
       subscriptionStatus: 'active',
       maxSeats: planInfo.seats,
       subscribedAt: nowIso,
       subscriptionUpdatedAt: nowIso,
-      appleOriginalTransactionId: originalTransactionId,
-      appleProductId: productId,
-      appleExpiresDateMs: expiresMs || null,
-      appleEnvironment: tx.environment || null,
+      ...appleLink,
     });
 
-    return res.status(200).json({
-      valid: true,
-      productId,
-      plan: planInfo.plan,
-      expiresDateMs: expiresMs || null,
-    });
+    return res.status(200).json(success);
   } catch (error) {
     console.error('validateAppleReceipt error:', error);
     return res.status(500).json({ valid: false, error: 'Internal error' });
@@ -1396,3 +1459,66 @@ exports.repairInviteJoin = onDocumentCreated(
   })
 );
 
+// =====================================================================================
+// Org profile change log
+//
+// recordOrgProfileChange: an org's admin can change its name, address and map pin, and a
+//   verified org keeps its "Verified" badge on everyone's map afterwards. Every change to
+//   those fields is recorded in org_profile_changes (old and new values, who, when); the
+//   ones the owner should re-check are flagged, for scripts/org-profile-changes.js to
+//   list. Updates that touch none of them cost nothing. Logic lives in
+//   orgProfileChanges.js.
+// =====================================================================================
+const { onDocumentUpdatedWithAuthContext } = require('firebase-functions/v2/firestore');
+const { createRecordOrgProfileChangeHandler } = require('./orgProfileChanges');
+
+exports.recordOrgProfileChange = onDocumentUpdatedWithAuthContext(
+  {
+    document: 'organizations/{orgId}',
+    database: '(default)',
+    region: 'us-central1', // must match the Firestore database location
+    // A failed run is redelivered so no change goes unrecorded. The record id comes from
+    // the org doc's update time, so a rerun finds its record and adds nothing.
+    retry: true,
+  },
+  createRecordOrgProfileChangeHandler({
+    db,
+    FieldValue: admin.firestore.FieldValue,
+    logger: console,
+  })
+);
+
+// =====================================================================================
+// Account deletion
+//
+// deleteAccount: Settings -> Delete Account (and the gate screens) call this with a
+//   recent ID token. It deletes everything the caller authored (alerts, watchlist
+//   entries, resources, team messages, their conversations and DMs, DM invites, invite
+//   codes, and those docs' photos in Storage), then users/{uid}, then the Auth user. The
+//   only admin of an org with other members must first hand the org to one of them
+//   (409 'last-admin', then a retry with newAdminUid). Logic lives in accountDeletion.js.
+// =====================================================================================
+const { createDeleteAccountHandler } = require('./accountDeletion');
+
+// The app's default bucket (src/config/firebase.ts). Only photos in it are deleted.
+const STORAGE_BUCKET = 'holyguard-app.firebasestorage.app';
+
+exports.deleteAccount = functions.https.onRequest(
+  { region: 'us-central1', timeoutSeconds: 300 },
+  createDeleteAccountHandler({
+    db,
+    auth: {
+      verifyIdToken: token => admin.auth().verifyIdToken(token),
+      deleteUser: uid => admin.auth().deleteUser(uid),
+    },
+    storage: {
+      bucketName: STORAGE_BUCKET,
+      deleteFile: path => admin.storage().bucket(STORAGE_BUCKET).file(path).delete({ ignoreNotFound: true }),
+      listFiles: async (prefix) => {
+        const [files] = await admin.storage().bucket(STORAGE_BUCKET).getFiles({ prefix });
+        return files.map(file => file.name);
+      },
+    },
+    logger: console,
+  })
+);

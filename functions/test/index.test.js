@@ -10,6 +10,7 @@ const Module = require('node:module');
 const path = require('node:path');
 
 const { INTENTS_COLLECTION } = require('../inviteJoinRepair');
+const { COLLECTION: ORG_CHANGES_COLLECTION } = require('../orgProfileChanges');
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = Date.parse('2026-10-15T18:00:00.000Z'); // fake server time for serverTimestamp()
@@ -38,6 +39,14 @@ class FakeTimestamp {
 
   toDate() {
     return new Date(this.millis);
+  }
+
+  get seconds() {
+    return Math.floor(this.millis / 1000);
+  }
+
+  get nanoseconds() {
+    return (this.millis % 1000) * 1e6;
   }
 }
 
@@ -70,6 +79,25 @@ class FakeDocRef {
 
   async update(data) {
     this.applyUpdate(data);
+  }
+
+  async delete() {
+    this.db.store.delete(this.path);
+  }
+
+  // Like the real create(): fails with ALREADY_EXISTS (gRPC code 6) if the doc exists.
+  async create(data) {
+    if (this.db.store.has(this.path)) {
+      const error = new Error(`6 ALREADY_EXISTS: Document already exists: ${this.path}`);
+      error.code = 6;
+      throw error;
+    }
+    this.applySet(data);
+  }
+
+  // Subcollections live under the parent's path ('organizations/x/verification/checks').
+  collection(name) {
+    return new FakeCollection(this.db, `${this.path}/${name}`);
   }
 
   snapshot() {
@@ -137,7 +165,9 @@ class FakeQuery {
     let refs = this.db.idsIn(this.collectionName)
       .map(id => new FakeDocRef(this.db, this.collectionName, id))
       .filter(ref => this.filters.every(({ field, op, value }) => {
-        const cmp = compareValues(this.db.store.get(ref.path).data[field], value);
+        const fieldValue = this.db.store.get(ref.path).data[field];
+        if (op === 'array-contains') return Array.isArray(fieldValue) && fieldValue.includes(value);
+        const cmp = compareValues(fieldValue, value);
         return cmp !== null && ops[op](cmp);
       }));
     for (const { field, direction } of [...this.orders].reverse()) {
@@ -198,6 +228,14 @@ class FakeDb {
     return result;
   }
 
+  batch() {
+    const refs = [];
+    return {
+      delete: ref => refs.push(ref),
+      commit: async () => refs.forEach(ref => this.store.delete(ref.path)),
+    };
+  }
+
   checkReads() {
     if (this.failReads) throw new Error('UNAVAILABLE: simulated read failure');
   }
@@ -208,7 +246,11 @@ class FakeDb {
 
   idsIn(collectionName) {
     const prefix = `${collectionName}/`;
-    return [...this.store.keys()].filter(p => p.startsWith(prefix)).map(p => p.slice(prefix.length));
+    // Direct children only: a subcollection document is not a document of this collection.
+    return [...this.store.keys()]
+      .filter(p => p.startsWith(prefix))
+      .map(p => p.slice(prefix.length))
+      .filter(id => !id.includes('/'));
   }
 
   seed(docPath, data, createTimeMillis = NOW) {
@@ -226,15 +268,43 @@ class FakeDb {
 }
 
 const fakeDb = new FakeDb();
+// Auth users that exist, and every Auth / Storage call deleteAccount made.
+const fakeAuthUsers = new Set();
+const fakeStorageFiles = new Map(); // `${bucket}/${path}` -> true
+const adminCalls = [];
 const fakeAdmin = {
   initializeApp: () => ({}),
   firestore: Object.assign(() => fakeDb, { FieldValue, Timestamp: FakeTimestamp }),
-  // ID tokens in these tests are 'token-<uid>'.
+  // ID tokens in these tests are 'token-<uid>' (signed in just now) or
+  // 'stale-token-<uid>' (signed in a day ago).
   auth: () => ({
     verifyIdToken: async (token) => {
-      if (!token.startsWith('token-')) throw new Error('auth/argument-error: invalid token');
-      return { uid: token.slice('token-'.length) };
+      const stale = token.startsWith('stale-token-');
+      if (!token.startsWith('token-') && !stale) throw new Error('auth/argument-error: invalid token');
+      const uid = token.slice(stale ? 'stale-token-'.length : 'token-'.length);
+      return { uid, auth_time: Math.floor((Date.now() - (stale ? DAY : 0)) / 1000) };
     },
+    deleteUser: async (uid) => {
+      adminCalls.push(`auth.deleteUser ${uid}`);
+      if (!fakeAuthUsers.delete(uid)) {
+        throw Object.assign(new Error('no user record'), { code: 'auth/user-not-found' });
+      }
+    },
+  }),
+  storage: () => ({
+    bucket: name => ({
+      file: path => ({
+        delete: async (options) => {
+          adminCalls.push(`storage.delete ${name}/${path} ${JSON.stringify(options)}`);
+          if (!fakeStorageFiles.delete(`${name}/${path}`) && !(options && options.ignoreNotFound)) {
+            throw Object.assign(new Error('No such object'), { code: 404 });
+          }
+        },
+      }),
+      getFiles: async ({ prefix }) => [[...fakeStorageFiles.keys()]
+        .filter(key => key.startsWith(`${name}/${prefix}`))
+        .map(key => ({ name: key.slice(name.length + 1) }))],
+    }),
   }),
 };
 
@@ -759,9 +829,9 @@ async function notify(notificationType, subtype, tx) {
   return res;
 }
 
-async function callReceipt(uid, jws) {
+async function callReceipt(uid, jws, extraBody = {}) {
   const res = makeRes();
-  await index.validateAppleReceipt({ method: 'POST', body: { jws }, headers: { authorization: `Bearer token-${uid}` } }, res);
+  await index.validateAppleReceipt({ method: 'POST', body: { jws, ...extraBody }, headers: { authorization: `Bearer token-${uid}` } }, res);
   return res;
 }
 
@@ -923,6 +993,134 @@ describe('validateAppleReceipt', () => {
       });
     }
   });
+
+  it('keeps accepting the live request shapes, { jws } and { jws, productId }', async (t) => {
+    stubAppleSignatures(t);
+    const jwsOnly = await callReceipt('admin1', signed(transaction({ productId: '001', originalTransactionId: 'otxA' })));
+    assert.equal(jwsOnly.statusCode, 200);
+    assert.match(jwsOnly.body, /"valid":true/);
+    assert.equal(fakeDb.read('organizations/AutoDocId123').subscriptionPlan, 'individual');
+
+    const withProduct = await callReceipt('admin1',
+      signed(transaction({ productId: '002', originalTransactionId: 'otxA' })), { productId: '002' });
+    assert.equal(withProduct.statusCode, 200);
+    assert.deepEqual(JSON.parse(withProduct.body),
+      { valid: true, productId: '002', plan: 'team', expiresDateMs: Number(IN_A_MONTH) });
+    assert.equal(fakeDb.read('organizations/AutoDocId123').maxSeats, 15);
+  });
+
+  it('refuses a refunded or revoked transaction, even before it expires', async (t) => {
+    stubAppleSignatures(t);
+    const res = await callReceipt('admin1', signed(transaction({
+      productId: '003', originalTransactionId: 'otxNew', revocationDate: Date.now() - DAY, revocationReason: 0,
+    })));
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body, '{"valid":false,"error":"Subscription revoked"}');
+    const org = fakeDb.read('organizations/AutoDocId123');
+    assert.equal(org.maxSeats, 15);
+    assert.equal('subscriptionStatus' in org, false);
+    assert.equal('appleOriginalTransactionId' in org, false);
+  });
+
+  it('still refuses a subscription already linked to another organization', async (t) => {
+    stubAppleSignatures(t);
+    fakeDb.seed('organizations/OtherOrg', { id: 'org_other', name: 'Other', appleOriginalTransactionId: 'otxNew' });
+    const res = await callReceipt('admin1', signed(transaction({ productId: '003', originalTransactionId: 'otxNew' })));
+    assert.equal(res.body, '{"valid":false,"error":"This subscription is already linked to another organization"}');
+    assert.equal(fakeDb.read('organizations/AutoDocId123').maxSeats, 15);
+  });
+
+  it('records only the Apple link on a grandfathered org, never a plan, seat cap or status', async (t) => {
+    stubAppleSignatures(t);
+    const grandfathered = {
+      id: ORG_ID, name: 'Grace Chapel', grandfathered: true, subscriptionStatus: 'active',
+      subscriptionPlan: 'grandfathered', grandfatherNote: 'sponsored',
+    };
+    for (const seats of [undefined, 7]) {
+      fakeDb.seed('organizations/AutoDocId123', seats ? { ...grandfathered, maxSeats: seats } : grandfathered);
+      const res = await callReceipt('admin1', signed(transaction({
+        productId: '001', originalTransactionId: 'otxGf', environment: 'Sandbox',
+      })), { productId: '001' });
+      assert.equal(res.statusCode, 200);
+      assert.deepEqual(JSON.parse(res.body),
+        { valid: true, productId: '001', plan: 'individual', expiresDateMs: Number(IN_A_MONTH), grandfathered: true });
+      const org = fakeDb.read('organizations/AutoDocId123');
+      const { subscriptionUpdatedAt, ...rest } = org;
+      assert.ok(subscriptionUpdatedAt);
+      assert.deepEqual(rest, {
+        ...(seats ? { ...grandfathered, maxSeats: seats } : grandfathered),
+        appleOriginalTransactionId: 'otxGf',
+        appleProductId: '001',
+        appleExpiresDateMs: Number(IN_A_MONTH),
+        appleEnvironment: 'Sandbox',
+      });
+    }
+  });
+
+  it("answers success on a grandfathered org but keeps its other running subscription's link", async (t) => {
+    stubAppleSignatures(t);
+    const linked = {
+      id: ORG_ID, name: 'Grace Chapel', grandfathered: true, subscriptionStatus: 'active', subscriptionPlan: 'grandfathered',
+      appleOriginalTransactionId: 'otxOld', appleProductId: '002', appleExpiresDateMs: Date.now() + 10 * DAY,
+    };
+    fakeDb.seed('organizations/AutoDocId123', linked);
+    const res = await callReceipt('admin1', signed(transaction({ productId: '001', originalTransactionId: 'otxNew' })));
+    assert.equal(res.statusCode, 200);
+    assert.match(res.body, /"valid":true/);
+    assert.deepEqual(fakeDb.read('organizations/AutoDocId123'), linked);
+  });
+
+  it('refuses (409) to replace a different subscription that is still running, and changes nothing', async (t) => {
+    stubAppleSignatures(t);
+    const paying = {
+      id: ORG_ID, name: 'Grace Chapel', subscriptionStatus: 'active', subscriptionPlan: 'team', maxSeats: 15,
+      appleOriginalTransactionId: 'otxOld', appleProductId: '002', appleExpiresDateMs: Date.now() + 10 * DAY,
+    };
+    fakeDb.seed('organizations/AutoDocId123', paying);
+    const res = await callReceipt('admin1', signed(transaction({ productId: '003', originalTransactionId: 'otxNew' })),
+      { productId: '003' });
+    assert.equal(res.statusCode, 409);
+    const body = JSON.parse(res.body);
+    assert.equal(body.valid, false);
+    assert.match(body.error, /already has an active App Store subscription/);
+    assert.deepEqual(fakeDb.read('organizations/AutoDocId123'), paying);
+  });
+
+  it('replaces a link whose subscription expired, or was refunded or revoked', async (t) => {
+    stubAppleSignatures(t);
+    const cases = {
+      expired: { subscriptionStatus: 'expired', appleExpiresDateMs: Date.now() - DAY },
+      'expired but still marked active': { subscriptionStatus: 'active', appleExpiresDateMs: Date.now() - DAY },
+      refunded: { subscriptionStatus: 'expired', appleExpiresDateMs: Date.now() + 10 * DAY },
+      'no expiry recorded': { subscriptionStatus: 'active' },
+    };
+    for (const [name, fields] of Object.entries(cases)) {
+      fakeDb.seed('organizations/AutoDocId123', {
+        id: ORG_ID, name: 'Grace Chapel', subscriptionPlan: 'individual', maxSeats: 3,
+        appleOriginalTransactionId: 'otxOld', appleProductId: '001', ...fields,
+      });
+      const res = await callReceipt('admin1', signed(transaction({ productId: '002', originalTransactionId: 'otxNew' })));
+      assert.equal(res.statusCode, 200, name);
+      assert.match(res.body, /"valid":true/, name);
+      const org = fakeDb.read('organizations/AutoDocId123');
+      assert.equal(org.appleOriginalTransactionId, 'otxNew', name);
+      assert.equal(org.subscriptionStatus, 'active', name);
+      assert.equal(org.subscriptionPlan, 'team', name);
+      assert.equal(org.maxSeats, 15, name);
+    }
+  });
+
+  it('accepts a renewal or restore of the subscription the org is already linked to', async (t) => {
+    stubAppleSignatures(t);
+    fakeDb.seed('organizations/AutoDocId123', {
+      id: ORG_ID, name: 'Grace Chapel', subscriptionStatus: 'active', subscriptionPlan: 'individual', maxSeats: 3,
+      appleOriginalTransactionId: 'otx1', appleProductId: '001', appleExpiresDateMs: Date.now() + DAY,
+    });
+    const res = await callReceipt('admin1', signed(transaction({ productId: '001', originalTransactionId: 'otx1' })));
+    assert.equal(res.statusCode, 200);
+    assert.match(res.body, /"valid":true/);
+    assert.equal(fakeDb.read('organizations/AutoDocId123').appleExpiresDateMs, Number(IN_A_MONTH));
+  });
 });
 
 // -------------------------------------------------------------------------------------
@@ -1040,5 +1238,222 @@ describe('repairInviteJoin export', () => {
     assert.equal(fakeDb.transactions, 0);
     assert.deepEqual(fakeDb.read('users/returning'), tosOnly);
     assert.equal(fakeDb.read(`${INTENTS_COLLECTION}/auto1`).consumed, false);
+  });
+});
+
+// -------------------------------------------------------------------------------------
+// recordOrgProfileChange wiring
+// -------------------------------------------------------------------------------------
+describe('recordOrgProfileChange export', () => {
+  beforeEach(() => fakeDb.reset());
+
+  it('is a gen2 Firestore onDocumentUpdatedWithAuthContext trigger on organizations/{orgId} in us-central1', () => {
+    const endpoint = index.recordOrgProfileChange.__endpoint;
+    assert.equal(endpoint.platform, 'gcfv2');
+    assert.deepEqual(endpoint.region, ['us-central1']);
+    assert.deepEqual(endpoint.eventTrigger, {
+      eventType: 'google.cloud.firestore.document.v1.updated.withAuthContext',
+      eventFilters: { database: '(default)', namespace: '(default)' },
+      eventFilterPathPatterns: { document: 'organizations/{orgId}' },
+      retry: true,
+    });
+  });
+
+  it('records an admin\'s rename of an org in org_profile_changes, once', async (t) => {
+    const consoleWarn = t.mock.method(console, 'warn', () => {});
+    fakeDb.seed('users/uidAdmin1',
+      { id: 'uidAdmin1', name: 'Pat Admin', email: 'admin@example.org', role: 'admin', organization_id: ORG_ID });
+    const before = {
+      id: ORG_ID,
+      name: 'Grace Chapel',
+      address: '100 Main St, Springfield',
+      latitude: 33.45,
+      longitude: -112.07,
+      status: 'verified',
+      maxSeats: 15,
+    };
+    const after = { ...before, name: 'Grace Chapel North' };
+    // The org doc snapshots of the update, as firebase-functions builds them.
+    const snapshot = (data, updateTime) => ({ id: 'AutoDocId123', exists: true, updateTime, data: () => ({ ...data }) });
+    const event = {
+      id: 'event-org-1',
+      time: new Date(NOW - 500).toISOString(),
+      params: { orgId: 'AutoDocId123' },
+      authType: 'app_user',
+      authId: 'uidAdmin1',
+      data: { before: snapshot(before, new FakeTimestamp(NOW - DAY)), after: snapshot(after, new FakeTimestamp(NOW - 1500)) },
+    };
+    const recordId = 'AutoDocId123_1792087198_500000000'; // from the update time, NOW - 1.5 s
+
+    assert.deepEqual(await index.recordOrgProfileChange.run(event), { outcome: 'recorded', id: recordId, needsReview: true });
+    assert.deepEqual(fakeDb.read(`${ORG_CHANGES_COLLECTION}/${recordId}`), {
+      orgDocId: 'AutoDocId123',
+      orgIdField: ORG_ID,
+      orgName: 'Grace Chapel North',
+      orgStatus: 'verified',
+      changedFields: ['name'],
+      before: { name: 'Grace Chapel', address: '100 Main St, Springfield', latitude: 33.45, longitude: -112.07 },
+      after: { name: 'Grace Chapel North', address: '100 Main St, Springfield', latitude: 33.45, longitude: -112.07 },
+      pinMovedMiles: null,
+      changedBy: {
+        authType: 'app_user',
+        authId: 'uidAdmin1',
+        uid: 'uidAdmin1',
+        role: 'admin',
+        name: 'Pat Admin',
+        email: 'admin@example.org',
+        orgId: ORG_ID,
+      },
+      changedAt: new FakeTimestamp(NOW - 1500),
+      eventId: 'event-org-1',
+      eventTime: new Date(NOW - 500).toISOString(),
+      recordedAt: new FakeTimestamp(NOW),
+      needsReview: true,
+      reviewedAt: null,
+      reviewedBy: null,
+      reviewNote: null,
+    });
+    assert.equal(consoleWarn.mock.callCount(), 1);
+    assert.deepEqual(consoleWarn.mock.calls[0].arguments,
+      [`[recordOrgProfileChange] needs review: org AutoDocId123 fields name by uidAdmin1 (${recordId})`]);
+
+    // A redelivery adds nothing.
+    assert.deepEqual(await index.recordOrgProfileChange.run(event), { outcome: 'duplicate', id: recordId });
+
+    // A subscription update reads nothing (any read would now fail) and writes nothing.
+    fakeDb.failReads = true;
+    const renewal = {
+      ...event,
+      id: 'event-org-2',
+      data: {
+        before: snapshot(after, new FakeTimestamp(NOW - 1500)),
+        after: snapshot({ ...after, subscriptionStatus: 'expired' }, new FakeTimestamp(NOW + 60000)),
+      },
+    };
+    assert.deepEqual(await index.recordOrgProfileChange.run(renewal), { outcome: 'skipped', reason: 'no_tracked_change' });
+    assert.deepEqual(fakeDb.docsIn(ORG_CHANGES_COLLECTION).map(record => record.id), [recordId]);
+    assert.equal(consoleWarn.mock.callCount(), 1);
+  });
+});
+
+// -------------------------------------------------------------------------------------
+// deleteAccount wiring (the handler itself is tested in accountDeletion.test.js)
+// -------------------------------------------------------------------------------------
+describe('deleteAccount export', () => {
+  const BUCKET = 'holyguard-app.firebasestorage.app';
+  const downloadUrl = path => `https://firebasestorage.googleapis.com/v0/b/${BUCKET}/o/${encodeURIComponent(path)}?alt=media&token=x`;
+
+  async function callDelete(token, body = {}) {
+    const res = makeRes();
+    await index.deleteAccount({ method: 'POST', body, headers: { authorization: `Bearer ${token}` } }, res);
+    return res;
+  }
+
+  beforeEach(() => {
+    fakeDb.reset();
+    fakeAuthUsers.clear();
+    fakeStorageFiles.clear();
+    adminCalls.length = 0;
+  });
+
+  it('is a gen2 HTTPS function in us-central1 with room to finish a large account', () => {
+    const endpoint = index.deleteAccount.__endpoint;
+    assert.equal(endpoint.platform, 'gcfv2');
+    assert.deepEqual(endpoint.region, ['us-central1']);
+    assert.equal(endpoint.timeoutSeconds, 300);
+    assert.deepEqual(endpoint.httpsTrigger, {});
+  });
+
+  it('deletes through the real Firestore, Storage and Auth wiring, the Auth user last', async (t) => {
+    t.mock.method(console, 'log', () => {});
+    fakeDb.seed('users/u1', { id: 'u1', role: 'member', organization_id: ORG_ID });
+    fakeDb.seed('users/u2', { id: 'u2', role: 'admin', organization_id: ORG_ID });
+    fakeAuthUsers.add('u1');
+    fakeDb.seed('alerts/a1', { reporterId: 'u1', organizationId: ORG_ID, imageUrls: [downloadUrl('incidents/1_a.jpg')] });
+    fakeDb.seed('conversations/c1', { participants: ['u1', 'u2'] });
+    fakeDb.seed('direct_messages/m1', { conversationId: 'c1', senderId: 'u2', text: 'hi' });
+    fakeStorageFiles.set(`${BUCKET}/incidents/1_a.jpg`, true);
+    fakeStorageFiles.set(`${BUCKET}/direct_messages/c1/2.jpg`, true);
+    fakeStorageFiles.set(`${BUCKET}/direct_messages/c10/3.jpg`, true); // another conversation's folder
+
+    const res = await callDelete('token-u1');
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body, '{"deleted":true}');
+    assert.equal(fakeDb.read('users/u1'), undefined);
+    assert.equal(fakeDb.read('alerts/a1'), undefined);
+    assert.equal(fakeDb.read('conversations/c1'), undefined);
+    assert.equal(fakeDb.read('direct_messages/m1'), undefined);
+    assert.ok(fakeDb.read('users/u2'));
+    assert.deepEqual([...fakeStorageFiles.keys()], [`${BUCKET}/direct_messages/c10/3.jpg`]);
+    assert.deepEqual(adminCalls, [
+      `storage.delete ${BUCKET}/incidents/1_a.jpg {"ignoreNotFound":true}`,
+      `storage.delete ${BUCKET}/direct_messages/c1/2.jpg {"ignoreNotFound":true}`,
+      'auth.deleteUser u1',
+    ]);
+    assert.equal(fakeAuthUsers.has('u1'), false);
+  });
+
+  it('refuses a stale sign-in and touches nothing', async (t) => {
+    t.mock.method(console, 'log', () => {});
+    fakeDb.seed('users/u1', { id: 'u1', role: 'member', organization_id: ORG_ID });
+    fakeAuthUsers.add('u1');
+    const res = await callDelete('stale-token-u1');
+    assert.equal(res.statusCode, 403);
+    assert.equal(res.body, '{"error":"requires-recent-login"}');
+    assert.ok(fakeDb.read('users/u1'));
+    assert.deepEqual(adminCalls, []);
+  });
+});
+
+// -------------------------------------------------------------------------------------
+// Organization verification: a super admin's rejection stands
+// -------------------------------------------------------------------------------------
+describe('organization verification after a rejection', () => {
+  const CHECKS = 'organizations/AutoDocId123/verification/checks';
+
+  beforeEach(() => {
+    fakeDb.reset();
+    fakeDb.seed('organizations/AutoDocId123', { id: ORG_ID, name: 'Grace Chapel', status: 'rejected' });
+    fakeDb.seed('users/admin1', { role: 'admin', organization_id: ORG_ID });
+    fakeDb.seed(CHECKS, {
+      googlePlaces: { score: 30 }, einVerification: { score: 30 }, emailDomain: { score: 0 }, phoneSms: { score: 0 },
+      totalScore: 60, autoApproved: false,
+    });
+  });
+
+  async function call(handler, body) {
+    const res = makeRes();
+    await index[handler]({ method: 'POST', body, headers: { authorization: 'Bearer token-admin1' } }, res);
+    return res;
+  }
+
+  it('verifyOrganization refuses to re-score a rejected org and leaves it rejected', async (t) => {
+    const fetchMock = t.mock.method(globalThis, 'fetch', async () => { throw new Error('no network in tests'); });
+    for (const organizationId of ['AutoDocId123', ORG_ID]) {
+      const res = await call('verifyOrganization', { organizationId, ein: '123456789' });
+      assert.equal(res.statusCode, 409);
+      assert.deepEqual(JSON.parse(res.body), { error: 'Organization was not approved', status: 'rejected' });
+    }
+    assert.equal(fetchMock.mock.callCount(), 0);
+    assert.equal(fakeDb.read('organizations/AutoDocId123').status, 'rejected');
+    assert.equal(fakeDb.read(CHECKS).totalScore, 60);
+  });
+
+  it('confirmPhoneVerification records the score but never auto-approves a rejected org', async () => {
+    const res = await call('confirmPhoneVerification', { organizationId: 'AutoDocId123', phoneNumber: '+15555550123' });
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(JSON.parse(res.body), { success: true, totalScore: 75, autoApproved: false, status: 'rejected' });
+    const org = fakeDb.read('organizations/AutoDocId123');
+    assert.equal(org.status, 'rejected');
+    assert.equal(org.verificationScore, 75);
+    assert.equal(fakeDb.read(CHECKS).autoApproved, false);
+  });
+
+  it('confirmPhoneVerification still auto-approves a pending org at the threshold', async () => {
+    fakeDb.seed('organizations/AutoDocId123', { id: ORG_ID, name: 'Grace Chapel', status: 'pending' });
+    const res = await call('confirmPhoneVerification', { organizationId: 'AutoDocId123', phoneNumber: '+15555550123' });
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(JSON.parse(res.body), { success: true, totalScore: 75, autoApproved: true, status: 'verified' });
+    assert.equal(fakeDb.read('organizations/AutoDocId123').status, 'verified');
   });
 });
