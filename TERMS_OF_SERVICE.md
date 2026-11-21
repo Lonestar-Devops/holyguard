@@ -1,6 +1,6 @@
 # Terms of Service for HolyGuard
 
-**Last Updated: November 10, 2026**
+**Last Updated: November 21, 2026**
 
 ## 1. Acceptance of Terms
 
@@ -16,13 +16,15 @@ HolyGuard provides a security alert and communication platform designed for fait
 
 **IMPORTANT DISCLAIMER**: HolyGuard is a supplementary tool and should NOT replace calling 911 or local emergency services in case of an actual emergency.
 
-## 3. Authorized Use Only
+## 3. Who Can Use HolyGuard
 
-HolyGuard is designed exclusively for authorized security team members who have been formally designated by their organization. By using this App, you represent and warrant that:
+Anyone can download HolyGuard and create an account. To use it, you either create your own organization or join an existing one with an invite code from its administrator. New organizations are checked before they are activated.
 
-- You are an authorized member of a security team designated by a participating organization
-- Your organization has verified your identity and suitability for security responsibilities
-- You will only use this App in connection with your authorized security duties
+By using this App, you represent and warrant that:
+
+- If you create an organization, you are authorized to represent it and to manage its HolyGuard account
+- If you join an organization, its administrator invited you to join it
+- You will only use this App for your organization's security and safety work
 - You understand that unauthorized access or use constitutes a violation of these Terms and may result in immediate account termination and legal action
 
 ### Organization Certification Requirement
@@ -46,23 +48,22 @@ Any misuse of the HolyGuard platform, including but not limited to filing false 
 ## 4. Eligibility
 
 - You must be at least 18 years old to use HolyGuard
-- You must be a designated member of an authorized security team
-- You must have a valid access code provided by your organization's administrator
+- You must either create your own organization or join one with an invite code from its administrator
 - You must provide accurate registration information
 - You are responsible for maintaining the confidentiality of your account
 
-## 5. User Accounts and Access Codes
+## 5. User Accounts and Invite Codes
 
 ### Account Creation
 - You must register with a valid email address and create a secure password
 - You must verify your email address before accessing the App
 - You are responsible for all activity under your account
 
-### Access Codes
-- Access codes are provided by authorized administrators
-- Access codes determine your role and permissions (admin, security, member)
-- Sharing access codes with unauthorized individuals is prohibited
-- Lost or compromised access codes should be reported immediately
+### Invite Codes
+- Organization administrators create invite codes to add members to their organization
+- An invite code adds you to the organization as a member; its administrators manage your role
+- Sharing invite codes with people your organization has not approved is prohibited
+- Report lost or compromised invite codes to your organization's administrator
 
 ## 6. Acceptable Use Policy
 

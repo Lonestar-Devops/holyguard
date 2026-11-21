@@ -65,7 +65,7 @@ export const TosAcceptanceScreen = () => {
                 <View style={styles.bulletRow}>
                     <MaterialCommunityIcons name="shield-check" size={20} color={theme.colors.primary} />
                     <Text style={styles.bulletText}>
-                        HolyGuard is exclusively for authorized security team members designated by their organization.
+                        Create your own organization, or join one with an invite code from its administrator.
                     </Text>
                 </View>
 
